@@ -1,0 +1,726 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect } from 'react';
+import { 
+  FileText, 
+  Plus, 
+  Search, 
+  Trash2, 
+  Save, 
+  X, 
+  Building2, 
+  User, 
+  ShoppingCart,
+  CheckCircle,
+  RefreshCw,
+  Eye,
+  Route
+} from 'lucide-react';
+import { collection, getDocs, doc, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import { db } from '../lib/firebase';
+import { SalesInvoice, Customer, Company, Product, InvoiceItem, UserRole } from '../types';
+import { logActivity } from '../lib/activityLogger';
+
+interface SalesInvoiceViewProps {
+  userRole: UserRole;
+  userId: string;
+  userName: string;
+}
+
+export default function SalesInvoiceView({ userRole, userId, userName }: SalesInvoiceViewProps) {
+  const [invoices, setInvoices] = useState<SalesInvoice[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [companies, setCompanies] = useState<Company[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  
+  const [loading, setLoading] = useState(true);
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+  const [selectedInvoice, setSelectedInvoice] = useState<SalesInvoice | null>(null);
+
+  // New Invoice Form
+  const [customerId, setCustomerId] = useState('');
+  const [companyId, setCompanyId] = useState('');
+  const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().split('T')[0]);
+  const [items, setItems] = useState<InvoiceItem[]>([]);
+  const [discount, setDiscount] = useState<number>(0);
+  const [paymentReceived, setPaymentReceived] = useState<number>(0);
+  const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'MOBILE_BANKING' | 'CHEQUE' | 'DUE'>('CASH');
+
+  // Single item adder state
+  const [currentProductId, setCurrentProductId] = useState('');
+  const [currentQty, setCurrentQty] = useState<number>(1);
+  const [qtyMode, setQtyMode] = useState<'UNITS' | 'CARTONS'>('UNITS');
+
+  const loadData = async () => {
+    try {
+      setLoading(true);
+      
+      // Fetch companies, customers, products, and sales invoices in parallel
+      const [compSnap, custSnap, prodSnap, invSnap] = await Promise.all([
+        getDocs(collection(db, 'companies')),
+        getDocs(collection(db, 'customers')),
+        getDocs(collection(db, 'products')),
+        getDocs(collection(db, 'sales'))
+      ]);
+
+      const compList: Company[] = [];
+      compSnap.forEach(d => compList.push(d.data() as Company));
+      setCompanies(compList);
+
+      const custList: Customer[] = [];
+      custSnap.forEach(d => custList.push(d.data() as Customer));
+      setCustomers(custList);
+
+      const prodList: Product[] = [];
+      prodSnap.forEach(d => prodList.push(d.data() as Product));
+      setProducts(prodList);
+
+      const invList: SalesInvoice[] = [];
+      invSnap.forEach(d => invList.push(d.data() as SalesInvoice));
+      
+      // Sort invoices by date and time descending
+      invList.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      setInvoices(invList);
+
+    } catch (err) {
+      console.error('Error loading sales data:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const handleOpenAddModal = () => {
+    setCustomerId('');
+    setCompanyId('');
+    setItems([]);
+    setDiscount(0);
+    setPaymentReceived(0);
+    setPaymentMethod('CASH');
+    setCurrentProductId('');
+    setCurrentQty(1);
+    setIsAddModalOpen(true);
+  };
+
+  // Filter products by selected Company
+  const availableProducts = products.filter(p => p.companyId === companyId);
+
+  const handleAddItem = () => {
+    if (!currentProductId || currentQty <= 0) return;
+    const prod = products.find(p => p.id === currentProductId);
+    if (!prod) return;
+
+    // Calculate final units qty based on mode
+    const units = qtyMode === 'CARTONS' ? currentQty * prod.cartonSize : currentQty;
+    const cartonQty = units / prod.cartonSize;
+
+    // Check primary stock
+    if (prod.stockCount < units) {
+      alert(`Insufficient primary depot stock! Available: ${prod.stockCount} units, Selected: ${units} units.`);
+      return;
+    }
+
+    // Check if already added
+    const existing = items.find(i => i.productId === currentProductId);
+    if (existing) {
+      const newQty = existing.qty + units;
+      if (prod.stockCount < newQty) {
+        alert(`Insufficient primary depot stock for updated quantity!`);
+        return;
+      }
+      setItems(prev => prev.map(i => i.productId === currentProductId ? {
+        ...i,
+        qty: newQty,
+        cartonQty: newQty / prod.cartonSize,
+        total: newQty * prod.retailPrice
+      } : i));
+    } else {
+      const newItem: InvoiceItem = {
+        productId: prod.id,
+        name: prod.name,
+        qty: units,
+        price: prod.retailPrice,
+        total: units * prod.retailPrice,
+        cartonQty: cartonQty
+      };
+      setItems(prev => [...prev, newItem]);
+    }
+
+    // Reset single item state
+    setCurrentProductId('');
+    setCurrentQty(1);
+  };
+
+  const handleRemoveItem = (prodId: string) => {
+    setItems(prev => prev.filter(i => i.productId !== prodId));
+  };
+
+  const calculateSubTotal = () => {
+    return items.reduce((sum, item) => sum + item.total, 0);
+  };
+
+  const calculateGrandTotal = () => {
+    return Math.max(0, calculateSubTotal() - discount);
+  };
+
+  const handleCreateInvoice = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!customerId || !companyId || items.length === 0) {
+      alert('Please fill out customer, company, and add at least one product.');
+      return;
+    }
+
+    const customerObj = customers.find(c => c.id === customerId);
+    const companyObj = companies.find(c => c.id === companyId);
+    if (!customerObj || !companyObj) return;
+
+    try {
+      setLoading(true);
+      const batch = writeBatch(db);
+      const invoiceId = 'inv-' + Date.now();
+      const invoiceNo = 'INV-' + Date.now().toString().slice(-6);
+      const subTotal = calculateSubTotal();
+      const grandTotal = calculateGrandTotal();
+      
+      const dueAmt = Math.max(0, grandTotal - paymentReceived);
+      const status = paymentReceived >= grandTotal ? 'PAID' : (paymentReceived > 0 ? 'PARTIAL' : 'DUE');
+
+      // 1. Create Sales Invoice Record
+      const invoiceObj: SalesInvoice = {
+        id: invoiceId,
+        invoiceNo,
+        date: invoiceDate,
+        customerId,
+        customerName: customerObj.name,
+        shopName: customerObj.shopName,
+        companyId,
+        companyName: companyObj.name,
+        items,
+        subTotal,
+        discount,
+        grandTotal,
+        paymentReceived,
+        paymentMethod,
+        route: customerObj.route,
+        area: customerObj.area,
+        status,
+        createdAt: new Date().toISOString()
+      };
+
+      batch.set(doc(db, 'sales', invoiceId), invoiceObj);
+
+      // 2. Adjust Product Stocks
+      for (const item of items) {
+        const prod = products.find(p => p.id === item.productId);
+        if (prod) {
+          const newStock = Math.max(0, prod.stockCount - item.qty);
+          batch.update(doc(db, 'products', prod.id), { stockCount: newStock });
+        }
+      }
+
+      // 3. Update Customer Outstanding Company-Wise Dues
+      const currentDues = customerObj.dues || {};
+      const previousCompanyDue = currentDues[companyId] || 0;
+      
+      // If payment mode is DUE or there is partial due, increase company due
+      const newCompanyDue = previousCompanyDue + dueAmt;
+      const updatedDues = {
+        ...currentDues,
+        [companyId]: newCompanyDue
+      };
+      
+      const newTotalDue = Object.values(updatedDues).reduce((s: number, a: unknown) => s + (Number(a) || 0), 0);
+
+      batch.update(doc(db, 'customers', customerId), {
+        dues: updatedDues,
+        totalDue: newTotalDue
+      });
+
+      // 4. Record Customer Ledger Entry
+      const ledgerEntryId = `ledger-${invoiceId}`;
+      batch.set(doc(db, 'ledgers', ledgerEntryId), {
+        id: ledgerEntryId,
+        customerId,
+        companyId,
+        companyName: companyObj.name,
+        type: 'INVOICE',
+        referenceId: invoiceId,
+        referenceNo: invoiceNo,
+        date: invoiceDate,
+        amount: grandTotal,
+        balanceAfter: newCompanyDue,
+        createdAt: new Date().toISOString()
+      });
+
+      await batch.commit();
+
+      // Log action to Firestore
+      await logActivity(
+        userId,
+        userName,
+        userRole,
+        'INVOICE_CREATE',
+        `Created Sales Invoice #${invoiceNo} for customer ${customerObj.name} (${customerObj.shopName}) - Total: ৳${grandTotal}`,
+        { invoiceId, invoiceNo, grandTotal, customerId, companyId }
+      );
+
+      setIsAddModalOpen(false);
+      loadData();
+    } catch (err) {
+      console.error('Error creating invoice:', err);
+      alert('Failed to generate sales invoice. Please check internet connection.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleViewInvoiceDetails = (inv: SalesInvoice) => {
+    setSelectedInvoice(inv);
+    setIsDetailModalOpen(true);
+  };
+
+  return (
+    <div className="space-y-6" id="sales-module">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Sales Invoicing</h2>
+          <p className="text-sm text-gray-500">Record retail outlet invoices, adjust company ledgers, and manage stock outflows</p>
+        </div>
+        <button
+          onClick={handleOpenAddModal}
+          id="btn-new-invoice"
+          className="flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer"
+        >
+          <Plus className="w-4 h-4" />
+          <span>Create Sales Invoice</span>
+        </button>
+      </div>
+
+      {/* Invoice Records Table */}
+      {loading ? (
+        <div className="text-center py-12 bg-white rounded-xl border border-gray-100">
+          <RefreshCw className="w-8 h-8 text-blue-600 animate-spin mx-auto mb-2" />
+          <p className="text-sm text-gray-500">Loading sales journal...</p>
+        </div>
+      ) : invoices.length === 0 ? (
+        <div className="text-center py-16 bg-white rounded-xl border border-gray-100">
+          <FileText className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+          <p className="text-gray-500 font-medium">No sales invoices recorded yet</p>
+          <p className="text-xs text-gray-400 mt-1">Click the top-right button to generate your first distribution sales bill.</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden" id="sales-table-container">
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-left">
+              <thead>
+                <tr className="bg-slate-50 text-slate-400 uppercase text-[10px] font-bold tracking-wider border-b border-gray-100">
+                  <th className="px-6 py-4">Invoice No</th>
+                  <th className="px-6 py-4">Outlet / Shop Name</th>
+                  <th className="px-6 py-4">Brand / Company</th>
+                  <th className="px-6 py-4 text-right">Bill Value</th>
+                  <th className="px-6 py-4 text-center">Status</th>
+                  <th className="px-6 py-4 text-center">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 text-sm">
+                {invoices.map((inv) => (
+                  <tr key={inv.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="px-6 py-4 font-bold text-blue-700 font-mono">{inv.invoiceNo}</td>
+                    <td className="px-6 py-4">
+                      <p className="font-semibold text-gray-950">{inv.shopName}</p>
+                      <p className="text-[10px] text-gray-400">{inv.route} • {inv.date}</p>
+                    </td>
+                    <td className="px-6 py-4 text-gray-500 font-medium">{inv.companyName}</td>
+                    <td className="px-6 py-4 text-right font-black text-gray-950">৳{inv.grandTotal.toLocaleString()}</td>
+                    <td className="px-6 py-4 text-center">
+                      <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                        inv.status === 'PAID' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' :
+                        inv.status === 'PARTIAL' ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-rose-50 text-rose-700 border border-rose-100'
+                      }`}>
+                        {inv.status}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-center">
+                      <button
+                        onClick={() => handleViewInvoiceDetails(inv)}
+                        className="text-blue-600 hover:text-blue-800 p-1.5 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                        title="View Detailed Invoice"
+                      >
+                        <Eye className="w-4 h-4 mx-auto" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: New Invoice Builder */}
+      {isAddModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-xl relative max-h-[95vh] overflow-y-auto">
+            <button onClick={() => setIsAddModalOpen(false)} className="absolute top-4 right-4 p-1 rounded-full hover:bg-gray-100">
+              <X className="w-5 h-5 text-gray-500" />
+            </button>
+
+            <h3 className="text-lg font-bold text-gray-900 mb-1">Sales Invoice Builder</h3>
+            <p className="text-xs text-gray-400 mb-6">Build a retail distribution receipt. Outstanding dues accrue per-company based on payment modes.</p>
+
+            <form onSubmit={handleCreateInvoice} className="space-y-4">
+              {/* Header Fields */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Bill Date</label>
+                  <input
+                    type="date"
+                    required
+                    value={invoiceDate}
+                    onChange={(e) => setInvoiceDate(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Customer / Retail Outlet *</label>
+                  <select
+                    required
+                    value={customerId}
+                    onChange={(e) => setCustomerId(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs"
+                  >
+                    <option value="">Select Customer</option>
+                    {customers.map(c => (
+                      <option key={c.id} value={c.id}>{c.shopName} ({c.name})</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Manufacturer Partner *</label>
+                  <select
+                    required
+                    value={companyId}
+                    onChange={(e) => {
+                      setCompanyId(e.target.value);
+                      setItems([]); // Clear items if company changes to prevent brand mixing
+                    }}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs"
+                  >
+                    <option value="">Select Company</option>
+                    {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* Add Item Form (Only if company is selected) */}
+              {companyId ? (
+                <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
+                  <p className="text-xs font-bold text-slate-800 mb-3 flex items-center">
+                    <ShoppingCart className="w-4 h-4 mr-1 text-slate-500" />
+                    <span>Select Products of Selected Company</span>
+                  </p>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+                    <div className="sm:col-span-2">
+                      <label className="block text-[10px] font-bold text-gray-500 mb-1">Product SKU</label>
+                      <select
+                        value={currentProductId}
+                        onChange={(e) => setCurrentProductId(e.target.value)}
+                        className="w-full p-2 bg-white border border-slate-200 rounded text-xs"
+                      >
+                        <option value="">Select Product SKU</option>
+                        {availableProducts.map(p => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} (Stock: {p.stockCount} Units, ৳{p.retailPrice}/unit)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-gray-500 mb-1">Sales Mode</label>
+                      <select
+                        value={qtyMode}
+                        onChange={(e) => setQtyMode(e.target.value as 'UNITS' | 'CARTONS')}
+                        className="w-full p-2 bg-white border border-slate-200 rounded text-xs"
+                      >
+                        <option value="UNITS">Pcs (Loose)</option>
+                        <option value="CARTONS">Cartons</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-gray-500 mb-1">Quantity</label>
+                      <div className="flex space-x-1">
+                        <input
+                          type="number"
+                          min={1}
+                          value={currentQty}
+                          onChange={(e) => setCurrentQty(parseInt(e.target.value) || 1)}
+                          className="w-full p-2 bg-white border border-slate-200 rounded text-xs text-center font-bold"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleAddItem}
+                          className="bg-blue-600 hover:bg-blue-700 text-white px-3 rounded font-bold text-xs shrink-0 cursor-pointer"
+                        >
+                          Add
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-4 bg-slate-50 rounded-xl border border-dashed border-slate-200 text-xs text-gray-400 italic">
+                  * Please choose a customer and company first to view compatible inventory SKUs.
+                </div>
+              )}
+
+              {/* Added Products Grid */}
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-2">Invoice Roster</label>
+                {items.length === 0 ? (
+                  <div className="text-center py-6 bg-slate-50/50 rounded-xl border border-dashed border-slate-200 text-xs text-gray-400 italic">
+                    Add inventory items from above to populate the active invoice bill
+                  </div>
+                ) : (
+                  <div className="border border-slate-100 rounded-lg overflow-hidden bg-white">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 text-gray-500 font-bold">
+                        <tr>
+                          <th className="p-3">Product Description</th>
+                          <th className="p-3 text-right">Unit Price</th>
+                          <th className="p-3 text-center">Cartons Equivalent</th>
+                          <th className="p-3 text-center">Total Units</th>
+                          <th className="p-3 text-right">Total (৳)</th>
+                          <th className="p-3 text-center">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {items.map(item => (
+                          <tr key={item.productId}>
+                            <td className="p-3 font-semibold text-gray-800">{item.name}</td>
+                            <td className="p-3 text-right">৳{item.price.toFixed(2)}</td>
+                            <td className="p-3 text-center font-semibold text-slate-600">{item.cartonQty.toFixed(1)} Ctn</td>
+                            <td className="p-3 text-center font-bold">{item.qty} Pcs</td>
+                            <td className="p-3 text-right font-bold text-gray-900">৳{item.total.toLocaleString()}</td>
+                            <td className="p-3 text-center">
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveItem(item.productId)}
+                                className="text-rose-500 hover:text-rose-600 cursor-pointer"
+                              >
+                                <Trash2 className="w-4 h-4 mx-auto" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Invoice Calculations Footer */}
+              {items.length > 0 && (
+                <div className="border-t border-slate-100 pt-4 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+                  {/* Payment Info */}
+                  <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-200 sm:w-1/2">
+                    <p className="text-xs font-bold text-slate-800 uppercase tracking-wide">Ledger Payment Settlement</p>
+                    
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] text-gray-500 mb-1">Received Amt (৳)</label>
+                        <input
+                          type="number"
+                          value={paymentReceived || ''}
+                          placeholder="0.00"
+                          onChange={(e) => setPaymentReceived(parseFloat(e.target.value) || 0)}
+                          className="w-full p-2 bg-white border border-slate-200 rounded text-xs font-extrabold"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] text-gray-500 mb-1">Payment Method</label>
+                        <select
+                          value={paymentMethod}
+                          onChange={(e) => setPaymentMethod(e.target.value as any)}
+                          className="w-full p-2 bg-white border border-slate-200 rounded text-xs"
+                        >
+                          <option value="CASH">Cash Payment</option>
+                          <option value="MOBILE_BANKING">bKash/Nagad/Rocket</option>
+                          <option value="CHEQUE">Bank Cheque</option>
+                          <option value="DUE">DUE / On Credit</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {calculateGrandTotal() - paymentReceived > 0 && (
+                      <div className="p-2 bg-amber-50 text-amber-900 rounded text-[10px] font-medium border border-amber-100">
+                        ৳{(calculateGrandTotal() - paymentReceived).toLocaleString()} will be automatically logged to {customers.find(c => c.id === customerId)?.shopName}'s ledger for {companies.find(c => c.id === companyId)?.name}.
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Pricing Info */}
+                  <div className="space-y-2 sm:w-1/3 text-right">
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Sub-total:</span>
+                      <span className="font-semibold">৳{calculateSubTotal().toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-xs text-gray-500">
+                      <span>Discount (৳):</span>
+                      <input
+                        type="number"
+                        placeholder="0"
+                        value={discount || ''}
+                        onChange={(e) => setDiscount(parseFloat(e.target.value) || 0)}
+                        className="w-24 p-1 text-right bg-slate-50 border border-slate-200 rounded text-xs font-bold"
+                      />
+                    </div>
+                    <hr className="border-slate-100" />
+                    <div className="flex justify-between text-sm font-bold text-gray-900">
+                      <span>Grand Total:</span>
+                      <span className="text-lg font-black text-blue-700">৳{calculateGrandTotal().toLocaleString()}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="pt-4 border-t border-slate-100 flex items-center justify-end space-x-3">
+                <button
+                  type="button"
+                  onClick={() => setIsAddModalOpen(false)}
+                  className="bg-slate-100 text-gray-600 px-4 py-2.5 rounded-lg text-xs font-bold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={items.length === 0}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 text-white px-5 py-2.5 rounded-lg text-xs font-bold flex items-center space-x-1 cursor-pointer"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>File Distribution Bill</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: View Sales Invoice Details */}
+      {isDetailModalOpen && selectedInvoice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-xl w-full p-6 shadow-xl relative">
+            <button onClick={() => setIsDetailModalOpen(false)} className="absolute top-4 right-4 p-1 rounded-full hover:bg-gray-100">
+              <X className="w-5 h-5 text-gray-500" />
+            </button>
+
+            {/* Letterhead */}
+            <div className="text-center border-b border-slate-100 pb-4 mb-4">
+              <h1 className="text-xl font-extrabold text-blue-900 tracking-tight">SAMIRA TRADERS</h1>
+              <p className="text-[10px] text-gray-400 font-mono">Barguna Sadar, Barguna | Phone: 01712-345678</p>
+              <span className="text-xs font-bold text-slate-800 uppercase mt-2 tracking-widest inline-block bg-slate-50 border border-slate-200 px-3 py-1 rounded">
+                Sales Invoice Receipt
+              </span>
+            </div>
+
+            {/* Invoice Meta */}
+            <div className="grid grid-cols-2 gap-4 text-xs mb-4">
+              <div>
+                <p className="text-gray-400">Customer Outlet:</p>
+                <p className="font-bold text-gray-900">{selectedInvoice.shopName}</p>
+                <p className="text-gray-500">Route: {selectedInvoice.route}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-gray-400">Invoice Reference:</p>
+                <p className="font-bold text-blue-700 font-mono">{selectedInvoice.invoiceNo}</p>
+                <p className="text-gray-500">Date: {selectedInvoice.date}</p>
+              </div>
+            </div>
+
+            {/* Items table */}
+            <div className="border border-slate-150 rounded-lg overflow-hidden mb-4">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-slate-50 font-bold text-gray-600">
+                  <tr>
+                    <th className="p-2.5">Product</th>
+                    <th className="p-2.5 text-center">Cartons</th>
+                    <th className="p-2.5 text-center">Qty (loose)</th>
+                    <th className="p-2.5 text-right">Unit Price</th>
+                    <th className="p-2.5 text-right">Total</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {selectedInvoice.items.map(item => (
+                    <tr key={item.productId}>
+                      <td className="p-2.5 font-semibold text-gray-800">{item.name}</td>
+                      <td className="p-2.5 text-center">{item.cartonQty.toFixed(1)}</td>
+                      <td className="p-2.5 text-center">{item.qty} Pcs</td>
+                      <td className="p-2.5 text-right">৳{item.price.toFixed(2)}</td>
+                      <td className="p-2.5 text-right font-bold text-gray-900">৳{item.total.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pricing calculations */}
+            <div className="space-y-1 text-xs border-b border-slate-100 pb-3 mb-3">
+              <div className="flex justify-between">
+                <span className="text-gray-400">Sub-total:</span>
+                <span className="font-semibold">৳{selectedInvoice.subTotal.toLocaleString()}</span>
+              </div>
+              {selectedInvoice.discount > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Discount:</span>
+                  <span className="font-semibold text-rose-600">- ৳{selectedInvoice.discount}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-sm font-extrabold text-slate-900 pt-1">
+                <span>Grand Total:</span>
+                <span>৳{selectedInvoice.grandTotal.toLocaleString()}</span>
+              </div>
+            </div>
+
+            {/* Payment info */}
+            <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border border-slate-100 text-xs">
+              <div>
+                <p className="text-gray-400">Payment Status ({selectedInvoice.paymentMethod}):</p>
+                <p className="font-bold text-emerald-700">Paid: ৳{selectedInvoice.paymentReceived.toLocaleString()}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-gray-400">Outflow Balance (Due):</p>
+                <p className={`font-extrabold ${selectedInvoice.grandTotal - selectedInvoice.paymentReceived > 0 ? 'text-amber-600' : 'text-emerald-700'}`}>
+                  ৳{(selectedInvoice.grandTotal - selectedInvoice.paymentReceived).toLocaleString()}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 flex space-x-3">
+              <button
+                onClick={() => window.print()}
+                className="flex-1 bg-slate-100 hover:bg-slate-200 text-gray-700 font-bold py-2.5 rounded-xl text-xs cursor-pointer text-center"
+              >
+                Print Receipt
+              </button>
+              <button
+                onClick={() => setIsDetailModalOpen(false)}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-xl text-xs cursor-pointer text-center"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,25 @@
+{
+  "entities": {
+    "users": {
+      "title": "User",
+      "description": "User account and profile document",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "username": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "phone": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "username", "name", "role", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "users",
+      "description": "User profiles collection"
+    }
+  }
+}
