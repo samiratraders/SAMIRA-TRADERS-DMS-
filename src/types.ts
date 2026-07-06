@@ -164,12 +164,13 @@ export interface CustomerLedgerEntry {
   customerId: string;
   companyId: string;
   companyName: string;
-  type: 'INVOICE' | 'PAYMENT';
+  type: 'INVOICE' | 'PAYMENT' | 'PAYMENT_OUT' | 'RETURN' | 'TRANSFER' | 'ADJUSTMENT' | 'PURCHASE' | 'PURCHASE_RETURN';
   referenceId: string; // invoiceId or collectionId
   referenceNo: string; // invoiceNo or collectionNo
   date: string;
   amount: number;
   balanceAfter: number;
+  remarks?: string;
   createdAt: string;
 }
 

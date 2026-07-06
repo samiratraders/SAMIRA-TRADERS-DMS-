@@ -19,7 +19,8 @@ import {
   CheckCircle,
   AlertCircle,
   RefreshCw,
-  Trash2
+  Trash2,
+  Edit
 } from 'lucide-react';
 import { 
   collection, 
@@ -64,6 +65,16 @@ export default function CustomerView({ onSelectCustomerForLedger }: CustomerView
   const [newCustRoute, setNewCustRoute] = useState('');
   const [newCustArea, setNewCustArea] = useState('');
   const [newCustDues, setNewCustDues] = useState<{ [companyId: string]: number }>({});
+
+  // Edit Customer Form states
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editCustName, setEditCustName] = useState('');
+  const [editCustShop, setEditCustShop] = useState('');
+  const [editCustPhone, setEditCustPhone] = useState('');
+  const [editCustAddress, setEditCustAddress] = useState('');
+  const [editCustRoute, setEditCustRoute] = useState('');
+  const [editCustArea, setEditCustArea] = useState('');
+  const [editCustDues, setEditCustDues] = useState<{ [companyId: string]: number }>({});
 
   const loadData = async () => {
     try {
@@ -154,6 +165,9 @@ export default function CustomerView({ onSelectCustomerForLedger }: CustomerView
       return;
     }
 
+    const isConfirmed = window.confirm(`Are you sure you want to add the new customer "${newCustShop}"?`);
+    if (!isConfirmed) return;
+
     try {
       const custId = 'cust-' + Date.now();
       const totalDue = Object.values(newCustDues).reduce((s: number, a: any) => s + a, 0) as number;
@@ -196,10 +210,62 @@ export default function CustomerView({ onSelectCustomerForLedger }: CustomerView
       }
 
       setIsAddModalOpen(false);
+      alert(`Customer "${newCustShop}" added successfully.`);
       loadData();
     } catch (err) {
       console.error('Error creating customer:', err);
       alert('Failed to register customer. Please try again.');
+    }
+  };
+
+  const handleOpenEditModal = (cust: Customer) => {
+    setSelectedCustomer(cust);
+    setEditCustName(cust.name);
+    setEditCustShop(cust.shopName);
+    setEditCustPhone(cust.phone || '');
+    setEditCustAddress(cust.address || '');
+    setEditCustRoute(cust.route || '');
+    setEditCustArea(cust.area || '');
+    setEditCustDues(cust.dues || {});
+    setIsEditModalOpen(true);
+  };
+
+  const handleUpdateCustomer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCustomer) return;
+    if (!editCustName || !editCustShop) {
+      alert('Please fill out Customer Name and Shop Name.');
+      return;
+    }
+
+    const isConfirmed = window.confirm(`Are you sure you want to save changes for "${editCustShop}"?`);
+    if (!isConfirmed) return;
+
+    try {
+      setLoading(true);
+      const totalDue = Object.values(editCustDues).reduce((s: number, a: any) => s + a, 0) as number;
+
+      const updatedCustomer: Customer = {
+        ...selectedCustomer,
+        name: editCustName,
+        shopName: editCustShop,
+        phone: editCustPhone,
+        address: editCustAddress,
+        route: editCustRoute,
+        area: editCustArea,
+        dues: editCustDues,
+        totalDue: totalDue
+      };
+
+      await setDoc(doc(db, 'customers', selectedCustomer.id), updatedCustomer);
+      setIsEditModalOpen(false);
+      alert(`Customer "${editCustShop}" updated successfully.`);
+      loadData();
+    } catch (err) {
+      console.error('Error updating customer:', err);
+      alert('Failed to update customer details.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -352,6 +418,13 @@ export default function CustomerView({ onSelectCustomerForLedger }: CustomerView
                     View Ledger
                   </button>
                 )}
+                <button
+                  onClick={() => handleOpenEditModal(cust)}
+                  className="p-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-blue-600 rounded-lg transition-colors cursor-pointer flex-shrink-0"
+                  title="Edit Customer Profile"
+                >
+                  <Edit className="w-4 h-4" />
+                </button>
                 <button
                   onClick={() => handleDeleteCustomer(cust.id, cust.shopName)}
                   className="p-2 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-600 rounded-lg transition-colors cursor-pointer flex-shrink-0"
@@ -538,6 +611,140 @@ export default function CustomerView({ onSelectCustomerForLedger }: CustomerView
                 >
                   <Save className="w-4 h-4" />
                   <span>Save Outlet Profile</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Edit Customer Profile */}
+      {isEditModalOpen && selectedCustomer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-xl relative max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={() => setIsEditModalOpen(false)}
+              className="absolute top-4 right-4 p-1 rounded-full hover:bg-gray-100"
+            >
+              <X className="w-5 h-5 text-gray-500" />
+            </button>
+
+            <h3 className="text-lg font-bold text-gray-900 mb-1">Edit Customer Outlet Profile</h3>
+            <p className="text-xs text-gray-500 mb-5">Update outlet details, route, or company-wise ledger balances</p>
+
+            <form onSubmit={handleUpdateCustomer} className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Proprietor Name *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Haji Rahim"
+                    value={editCustName}
+                    onChange={(e) => setEditCustName(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Shop/Outlet Name *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Rahim Store"
+                    value={editCustShop}
+                    onChange={(e) => setEditCustShop(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Contact Phone</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 01712345678"
+                    value={editCustPhone}
+                    onChange={(e) => setEditCustPhone(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Route Designation</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Barguna Sadar Route"
+                    value={editCustRoute}
+                    onChange={(e) => setEditCustRoute(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Area Location</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Town Hall Bazar"
+                    value={editCustArea}
+                    onChange={(e) => setEditCustArea(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Address Detail</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Sadar Road, Barguna"
+                    value={editCustAddress}
+                    onChange={(e) => setEditCustAddress(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </div>
+              </div>
+
+              <div className="border-t border-slate-100 pt-4">
+                <p className="text-xs font-bold text-slate-800 mb-3 flex items-center">
+                  <Building2 className="w-4 h-4 mr-1 text-slate-500" />
+                  <span>Outstanding Balances (Company Wise)</span>
+                </p>
+                <div className="space-y-3 max-h-[160px] overflow-y-auto pr-1">
+                  {companies.map(comp => (
+                    <div key={comp.id} className="flex items-center justify-between gap-4 p-2 bg-slate-50 rounded-lg border border-slate-100">
+                      <span className="text-xs font-semibold text-gray-700">{comp.name} ({comp.code})</span>
+                      <div className="relative max-w-[140px]">
+                        <span className="absolute left-2.5 top-2 text-xs text-gray-400 font-bold">৳</span>
+                        <input
+                          type="number"
+                          placeholder="0"
+                          value={editCustDues[comp.id] || ''}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value) || 0;
+                            setEditCustDues(prev => ({ ...prev, [comp.id]: val }));
+                          }}
+                          className="w-full pl-6 pr-2 py-1 bg-white border border-slate-200 rounded text-xs text-right font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="pt-4 border-t border-slate-100 flex items-center justify-end space-x-3">
+                <button
+                  type="button"
+                  onClick={() => setIsEditModalOpen(false)}
+                  className="bg-slate-100 hover:bg-slate-200 text-gray-600 px-4 py-2.5 rounded-lg text-xs font-bold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg text-xs font-bold flex items-center space-x-1 cursor-pointer shadow-sm"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>Save Changes</span>
                 </button>
               </div>
             </form>

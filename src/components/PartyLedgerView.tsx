@@ -53,13 +53,15 @@ interface StaffLedgerEntry {
 
 export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerViewProps) {
   // Navigation Tabs
-  const [activeTab, setActiveTab] = useState<'customer' | 'dsr' | 'manager'>('customer');
+  const [activeTab, setActiveTab] = useState<'customer' | 'dsr' | 'manager' | 'supplier'>('customer');
   
   // Base Data States
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
+  const [suppliers, setSuppliers] = useState<any[]>([]);
   const [staffUsers, setStaffUsers] = useState<UserProfile[]>([]);
   const [staffLedgerEntries, setStaffLedgerEntries] = useState<StaffLedgerEntry[]>([]);
+  const [supplierLedgerEntries, setSupplierLedgerEntries] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -71,6 +73,7 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
   // Selected Entities
   const [selectedCustomerId, setSelectedCustomerId] = useState(preselectedCustomerId || '');
   const [selectedCompanyId, setSelectedCompanyId] = useState('');
+  const [selectedSupplierId, setSelectedSupplierId] = useState('');
   const [ledgerEntries, setLedgerEntries] = useState<CustomerLedgerEntry[]>([]);
   
   const [selectedStaffId, setSelectedStaffId] = useState('');
@@ -78,6 +81,18 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
   // --- MODAL POPUP STATES ---
   const [showStaffCreditModal, setShowStaffCreditModal] = useState(false);
   const [showExtraSalesModal, setShowExtraSalesModal] = useState(false);
+  const [showSupplierTxnModal, setShowSupplierTxnModal] = useState(false);
+
+  // Custom customer transaction states
+  const [custTxnType, setCustTxnType] = useState<string>('SALES_INVOICE');
+  const [custTxnDirection, setCustTxnDirection] = useState<'DEBIT' | 'CREDIT'>('DEBIT');
+
+  // Supplier transaction form states
+  const [supTxnDate, setSupTxnDate] = useState(new Date().toISOString().split('T')[0]);
+  const [supTxnType, setSupTxnType] = useState<string>('PURCHASE_BILL');
+  const [supTxnAmount, setSupTxnAmount] = useState<number>(0);
+  const [supTxnRefNo, setSupTxnRefNo] = useState('');
+  const [supTxnRemarks, setSupTxnRemarks] = useState('');
 
   // Print Wrapper States
   const [showPrintModal, setShowPrintModal] = useState(false);
@@ -180,11 +195,12 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
         } catch (_) {}
       }
 
-      const [compSnap, custSnap, usersSnap, staffLedgersSnap] = await Promise.all([
+      const [compSnap, custSnap, usersSnap, staffLedgersSnap, supSnap] = await Promise.all([
         getDocs(collection(db, 'companies')),
         getDocs(collection(db, 'customers')),
         getDocs(collection(db, 'users')),
-        getDocs(collection(db, 'staffLedgers'))
+        getDocs(collection(db, 'staffLedgers')),
+        getDocs(collection(db, 'suppliers'))
       ]);
 
       const compList: Company[] = [];
@@ -202,6 +218,10 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
       const usersList: UserProfile[] = [];
       usersSnap.forEach(d => usersList.push({ id: d.id, ...d.data() } as UserProfile));
       setStaffUsers(usersList);
+
+      const supList: any[] = [];
+      supSnap.forEach(d => supList.push(d.data()));
+      setSuppliers(supList);
 
       if (preselectedCustomerId) {
         setSelectedCustomerId(preselectedCustomerId);
@@ -274,6 +294,33 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
     }
   };
 
+  // Fetch supplier ledger entries
+  const fetchSupplierLedgerEntries = async () => {
+    if (!selectedSupplierId) {
+      setSupplierLedgerEntries([]);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const supplierLedgersSnap = await getDocs(collection(db, 'supplierLedgers'));
+      const entries: any[] = [];
+      supplierLedgersSnap.forEach(d => {
+        const entry = d.data();
+        if (entry.supplierId === selectedSupplierId) {
+          entries.push(entry);
+        }
+      });
+
+      entries.sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt));
+      setSupplierLedgerEntries(entries);
+    } catch (err) {
+      console.error('Error fetching supplier ledgers:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleViewInvoiceDetails = async (entry: CustomerLedgerEntry) => {
     try {
       setLoadingInvoice(true);
@@ -304,14 +351,17 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
   useEffect(() => {
     if (activeTab === 'customer') {
       fetchCustomerLedgerEntries();
+    } else if (activeTab === 'supplier') {
+      fetchSupplierLedgerEntries();
     } else {
       fetchStaffLedgerEntries();
     }
-  }, [selectedCustomerId, selectedCompanyId, selectedStaffId, activeTab]);
+  }, [selectedCustomerId, selectedCompanyId, selectedStaffId, selectedSupplierId, activeTab]);
 
   const activeCustomer = customers.find(c => c.id === selectedCustomerId);
   const activeCompany = companies.find(c => c.id === selectedCompanyId);
   const activeStaff = staffUsers.find(u => u.id === selectedStaffId);
+  const activeSupplier = suppliers.find(s => s.id === selectedSupplierId);
 
   const filteredLedgerEntries = ledgerEntries.filter(entry => {
     if (startDate && entry.date < startDate) return false;
@@ -320,6 +370,12 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
   });
 
   const filteredStaffLedgerEntries = staffLedgerEntries.filter(entry => {
+    if (startDate && entry.date < startDate) return false;
+    if (endDate && entry.date > endDate) return false;
+    return true;
+  });
+
+  const filteredSupplierLedgerEntries = supplierLedgerEntries.filter(entry => {
     if (startDate && entry.date < startDate) return false;
     if (endDate && entry.date > endDate) return false;
     return true;
@@ -402,7 +458,7 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
     }
   };
 
-  // --- SUBMIT EXTRA SALES DEBIT ---
+  // --- SUBMIT CUSTOMER TRANSACTIONS (FORMER EXTRA SALES) ---
   const handleExtraSalesSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedCustomerId || !activeCustomer) return;
@@ -411,9 +467,21 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
       return;
     }
     if (extraSalesAmount <= 0) {
-      alert('সঠিক টাকা নির্বাচন করুন!');
+      alert('সঠিক অংকের পরিমাণ প্রবেশ করান!');
       return;
     }
+
+    // Determine direction impact: Debit (+) increases due, Credit (-) reduces due
+    let isDebit = true;
+    if (custTxnType === 'PAYMENT' || custTxnType === 'RETURN' || custTxnType === 'PURCHASE_RETURN') {
+      isDebit = false;
+    } else if (custTxnType === 'TRANSFER' || custTxnType === 'ADJUSTMENT') {
+      isDebit = custTxnDirection === 'DEBIT';
+    }
+
+    const directionText = isDebit ? 'ড্যাবিট / বকেয়া বৃদ্ধি (+)' : 'ক্রেডিট / বকেয়া হ্রাস (-)';
+    const isConfirmed = window.confirm(`আপনি কি নিশ্চিতভাবে "${activeCustomer.shopName}" গ্রাহকের "${companies.find(c => c.id === extraSalesCompany)?.name || 'Company'}" খতিয়ানে একটি "${custTxnType}" (${directionText}) লেনদেন যুক্ত করতে চান?`);
+    if (!isConfirmed) return;
 
     try {
       setLoading(true);
@@ -422,7 +490,11 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
       const compObj = companies.find(c => c.id === extraSalesCompany);
       const currentDues = activeCustomer.dues || {};
       const prevDue = currentDues[extraSalesCompany] || 0;
-      const updatedCompanyDue = prevDue + extraSalesAmount;
+      
+      const updatedCompanyDue = isDebit 
+        ? prevDue + extraSalesAmount 
+        : Math.max(0, prevDue - extraSalesAmount);
+        
       const updatedDues = {
         ...currentDues,
         [extraSalesCompany]: updatedCompanyDue
@@ -435,13 +507,14 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
         id: ledgerEntryId,
         customerId: selectedCustomerId,
         companyId: extraSalesCompany,
-        companyName: compObj?.name || 'Samira Traders',
-        type: 'INVOICE',
+        companyName: compObj?.name || 'Company',
+        type: custTxnType as any,
         referenceId: ledgerEntryId,
-        referenceNo: extraSalesRefNo || `MAN-${ledgerEntryId.slice(-5).toUpperCase()}`,
+        referenceNo: extraSalesRefNo || `TXN-${ledgerEntryId.slice(-5).toUpperCase()}`,
         date: extraSalesDate,
         amount: extraSalesAmount,
         balanceAfter: updatedCompanyDue,
+        remarks: extraSalesRemarks || `${custTxnType} লেনদেন এন্ট্রি।`,
         createdAt: new Date().toISOString()
       };
 
@@ -454,15 +527,80 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
       });
 
       await batch.commit();
-      alert('গ্রাহকের লেজারে বাড়তি বিক্রয় ডেবিট এন্ট্রি সফলভাবে যুক্ত করা হয়েছে!');
+      alert('লেনদেনটি গ্রাহকের লেজার স্টেটমেন্টে সফলভাবে পোস্টিং করা হয়েছে!');
       setShowExtraSalesModal(false);
       setExtraSalesAmount(0);
       setExtraSalesRefNo('');
       setExtraSalesRemarks('');
       loadData();
     } catch (err) {
-      console.error('Error posting manual invoice debit:', err);
-      alert('ডেবিট পোস্ট করতে সমস্যা হয়েছে।');
+      console.error('Error posting manual customer transaction:', err);
+      alert('পোস্টিং করতে ত্রুটি হয়েছে।');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- SUBMIT SUPPLIER TRANSACTIONS ---
+  const handleSupplierTxnSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedSupplierId || !activeSupplier) return;
+    if (supTxnAmount <= 0) {
+      alert('সঠিক অংকের পরিমাণ প্রবেশ করান!');
+      return;
+    }
+
+    // Determine direction impact:
+    // PURCHASE_BILL increases due (+), PAYMENT and RETURN reduces due (-)
+    let isDebit = true; // increases supplier outstanding balance
+    if (supTxnType === 'PAYMENT' || supTxnType === 'RETURN' || supTxnType === 'PURCHASE_RETURN') {
+      isDebit = false;
+    }
+
+    const isConfirmed = window.confirm(`আপনি কি নিশ্চিতভাবে সাপ্লাইয়ার "${activeSupplier.name}" এর জন্য একটি "${supTxnType}" লেনদেন এন্ট্রি সেভ করতে চান?`);
+    if (!isConfirmed) return;
+
+    try {
+      setLoading(true);
+      const batch = writeBatch(db);
+
+      const currentBalance = activeSupplier.outstandingBalance !== undefined ? activeSupplier.outstandingBalance : 0;
+      const newBalance = isDebit 
+        ? currentBalance + supTxnAmount 
+        : Math.max(0, currentBalance - supTxnAmount);
+
+      const txnId = `sup-ledger-${selectedSupplierId}-${Date.now()}`;
+      const newEntry = {
+        id: txnId,
+        supplierId: selectedSupplierId,
+        supplierName: activeSupplier.name,
+        type: supTxnType,
+        date: supTxnDate,
+        amount: supTxnAmount,
+        referenceNo: supTxnRefNo || `SL-${txnId.slice(-5).toUpperCase()}`,
+        remarks: supTxnRemarks || `${supTxnType === 'PURCHASE_BILL' ? 'মালামাল ক্রয় বিল এন্ট্রি' : 'সাপ্লাইয়ার পেমেন্ট পরিশোধ'} করা হয়েছে।`,
+        balanceAfter: newBalance,
+        createdAt: new Date().toISOString()
+      };
+
+      // 1. Write Supplier Ledger Entry
+      batch.set(doc(db, 'supplierLedgers', txnId), newEntry);
+
+      // 2. Update Supplier outstanding balance
+      batch.update(doc(db, 'suppliers', selectedSupplierId), {
+        outstandingBalance: newBalance
+      });
+
+      await batch.commit();
+      alert('সাপ্লাইয়ার লেনদেন পোস্টিং সফলভাবে সম্পন্ন হয়েছে!');
+      setShowSupplierTxnModal(false);
+      setSupTxnAmount(0);
+      setSupTxnRefNo('');
+      setSupTxnRemarks('');
+      loadData();
+    } catch (err) {
+      console.error('Error posting supplier transaction:', err);
+      alert('পোস্টিং করতে সমস্যা হয়েছে।');
     } finally {
       setLoading(false);
     }
@@ -873,28 +1011,75 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
         </div>
       )}
 
-      {/* 2. Modal: Customer Extra Sales Debit */}
+      {/* 2. Modal: Customer Transaction Form (Former Extra Sales Debit) */}
       {showExtraSalesModal && activeCustomer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 overflow-y-auto">
-          <form onSubmit={handleExtraSalesSubmit} className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl relative border border-gray-100 space-y-4">
+          <form onSubmit={handleExtraSalesSubmit} className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl relative border border-gray-100 space-y-4 text-slate-900">
             <button 
               type="button"
               onClick={() => setShowExtraSalesModal(false)} 
-              className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-gray-100 text-gray-400"
+              className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-gray-100 text-gray-400 cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
             
             <h3 className="text-base font-black text-slate-900 border-b pb-2 flex items-center">
-              <PlusCircle className="w-5 h-5 text-emerald-600 mr-2" />
-              <span>বাড়তি সেলস ডেবিট যুক্তকরণ ({activeCustomer.shopName})</span>
+              <ArrowLeftRight className="w-5 h-5 text-indigo-600 mr-2" />
+              <span>লেনদেন পোস্টিং ও সমন্বয় (Add Transaction)</span>
             </h3>
 
             <div className="space-y-3 text-xs">
               
+              <div className="space-y-1">
+                <label className="block text-[10px] font-bold text-gray-500 uppercase">লেনদেনের ধরণ (Transaction Type) *</label>
+                <select
+                  value={custTxnType}
+                  onChange={(e) => setCustTxnType(e.target.value)}
+                  className="w-full p-2.5 bg-slate-50 border border-gray-200 rounded-xl font-bold focus:outline-none text-xs text-slate-900"
+                  required
+                >
+                  <option value="SALES_INVOICE">Sales Invoice (বিক্রয় মেমো / ডেবিট)</option>
+                  <option value="PAYMENT">Payment Receive (পেমেন্ট গ্রহণ / ক্রেডিট)</option>
+                  <option value="PAYMENT_OUT">Payment Out (পেমেন্ট আউট / ডেবিট)</option>
+                  <option value="RETURN">Sales Return (মাল ফেরত / ক্রেডিট)</option>
+                  <option value="TRANSFER">Balance Transfer (ব্যালেন্স ট্রান্সফার)</option>
+                  <option value="ADJUSTMENT">Balance Adjustment (ব্যালেন্স সমন্বয়)</option>
+                  <option value="PURCHASE">Purchase (ক্রয় / ডেবিট)</option>
+                  <option value="PURCHASE_RETURN">Purchase Return (ক্রয় ফেরত / ক্রেডিট)</option>
+                </select>
+              </div>
+
+              {(custTxnType === 'TRANSFER' || custTxnType === 'ADJUSTMENT') && (
+                <div className="space-y-1 bg-slate-50 p-2.5 rounded-xl border border-dashed border-slate-200">
+                  <label className="block text-[10px] font-black text-slate-500 uppercase mb-1">সমন্বয়ের দিক (Adjustment Flow) *</label>
+                  <div className="flex space-x-4">
+                    <label className="inline-flex items-center space-x-1.5 font-bold text-red-700">
+                      <input 
+                        type="radio" 
+                        name="custTxnDirection" 
+                        value="DEBIT" 
+                        checked={custTxnDirection === 'DEBIT'} 
+                        onChange={() => setCustTxnDirection('DEBIT')}
+                      />
+                      <span>বকেয়া বৃদ্ধি (Debit +)</span>
+                    </label>
+                    <label className="inline-flex items-center space-x-1.5 font-bold text-emerald-700">
+                      <input 
+                        type="radio" 
+                        name="custTxnDirection" 
+                        value="CREDIT" 
+                        checked={custTxnDirection === 'CREDIT'} 
+                        onChange={() => setCustTxnDirection('CREDIT')}
+                      />
+                      <span>বকেয়া হ্রাস (Credit -)</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="block text-[10px] font-bold text-gray-400 uppercase">তারিখ (Date)</label>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase">তারিখ (Date)</label>
                   <input
                     type="date"
                     value={extraSalesDate}
@@ -904,10 +1089,10 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="block text-[10px] font-bold text-gray-400 uppercase">মেমো নম্বর (Reference No)</label>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase">মেমো/রশিদ নং (Ref No)</label>
                   <input
                     type="text"
-                    placeholder="মেমো নং"
+                    placeholder="রশিদ বা মেমো নং"
                     value={extraSalesRefNo}
                     onChange={(e) => setExtraSalesRefNo(e.target.value)}
                     className="w-full p-2.5 bg-slate-50 border border-gray-200 rounded-xl font-mono focus:outline-none"
@@ -916,11 +1101,11 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
               </div>
 
               <div className="space-y-1">
-                <label className="block text-[10px] font-bold text-gray-400 uppercase">ব্র্যান্ড কোম্পানি নির্বাচন (Manufacturer) *</label>
+                <label className="block text-[10px] font-bold text-gray-500 uppercase">ব্র্যান্ড কোম্পানি নির্বাচন (Company Brand) *</label>
                 <select
                   value={extraSalesCompany}
                   onChange={(e) => setExtraSalesCompany(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-gray-200 rounded-xl font-bold focus:outline-none text-xs"
+                  className="w-full p-2.5 bg-slate-50 border border-gray-200 rounded-xl font-bold focus:outline-none text-xs text-slate-900"
                   required
                 >
                   <option value="">-- কোম্পানি সিলেক্ট করুন --</option>
@@ -931,25 +1116,25 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
               </div>
 
               <div className="space-y-1">
-                <label className="block text-[10px] font-bold text-gray-400 uppercase">ডেবিট টাকার পরিমাণ (Debit Amount ৳) *</label>
+                <label className="block text-[10px] font-bold text-gray-500 uppercase">টাকার পরিমাণ (Amount ৳) *</label>
                 <input
                   type="number"
-                  placeholder="কত টাকার ডেবিট এন্ট্রি হবে"
+                  placeholder="কত টাকার লেনদেন পোস্টিং হবে"
                   value={extraSalesAmount || ''}
                   onChange={(e) => setExtraSalesAmount(Math.max(0, parseFloat(e.target.value) || 0))}
-                  className="w-full p-2.5 bg-slate-50 border border-gray-200 rounded-xl font-bold font-mono focus:outline-none"
+                  className="w-full p-2.5 bg-slate-50 border border-gray-200 rounded-xl font-bold font-mono focus:outline-none text-slate-900 text-sm"
                   required
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="block text-[10px] font-bold text-gray-400 uppercase">মন্তব্য (Remarks)</label>
+                <label className="block text-[10px] font-bold text-gray-500 uppercase">মন্তব্য (Remarks)</label>
                 <textarea
                   rows={2}
-                  placeholder="এন্ট্রি সংক্রান্ত বিস্তারিত মন্তব্য"
+                  placeholder="এন্ট্রি সংক্রান্ত বিস্তারিত মন্তব্য..."
                   value={extraSalesRemarks}
                   onChange={(e) => setExtraSalesRemarks(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-gray-200 rounded-xl focus:outline-none"
+                  className="w-full p-2.5 bg-slate-50 border border-gray-200 rounded-xl focus:outline-none text-slate-900 text-xs"
                 />
               </div>
 
@@ -965,9 +1150,109 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
               </button>
               <button 
                 type="submit"
-                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-5 py-2.5 rounded-xl cursor-pointer shadow-lg shadow-emerald-500/10"
+                className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-5 py-2.5 rounded-xl cursor-pointer shadow-lg shadow-indigo-500/10"
               >
-                ডেবিট পোস্ট করুন (Post Debit)
+                পোস্টিং নিশ্চিত করুন (Post Transaction)
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* 3. Modal: Supplier Transaction Form */}
+      {showSupplierTxnModal && activeSupplier && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 overflow-y-auto">
+          <form onSubmit={handleSupplierTxnSubmit} className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl relative border border-gray-100 space-y-4 text-slate-900">
+            <button 
+              type="button"
+              onClick={() => setShowSupplierTxnModal(false)} 
+              className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-gray-100 text-gray-400 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            
+            <h3 className="text-base font-black text-slate-900 border-b pb-2 flex items-center">
+              <Building2 className="w-5 h-5 text-blue-600 mr-2" />
+              <span>সাপ্লাইয়ার লেনদেন পোস্টিং ({activeSupplier.name})</span>
+            </h3>
+
+            <div className="space-y-3 text-xs">
+              
+              <div className="space-y-1">
+                <label className="block text-[10px] font-bold text-gray-500 uppercase">লেনদেনের ধরণ (Transaction Type) *</label>
+                <select
+                  value={supTxnType}
+                  onChange={(e) => setSupTxnType(e.target.value)}
+                  className="w-full p-2.5 bg-slate-50 border border-gray-200 rounded-xl font-bold focus:outline-none text-xs text-slate-900"
+                  required
+                >
+                  <option value="PURCHASE_BILL">Purchase Bill (মালামাল ক্রয় বিল - বকেয়া পাওনা বৃদ্ধি +)</option>
+                  <option value="PAYMENT">Supplier Payment (পেমেন্ট পরিশোধ - বকেয়া হ্রাস -)</option>
+                  <option value="RETURN">Claims & Return (মাল ফেরত / সমন্বয় - বকেয়া হ্রাস -)</option>
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase">তারিখ (Date)</label>
+                  <input
+                    type="date"
+                    value={supTxnDate}
+                    onChange={(e) => setSupTxnDate(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border border-gray-200 rounded-xl font-mono focus:outline-none"
+                    required
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase">মেমো/বিল নং (Invoice/Bill No)</label>
+                  <input
+                    type="text"
+                    placeholder="বিল বা ইনভয়েস নং"
+                    value={supTxnRefNo}
+                    onChange={(e) => setSupTxnRefNo(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border border-gray-200 rounded-xl font-mono focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[10px] font-bold text-gray-500 uppercase">টাকার পরিমাণ (Amount ৳) *</label>
+                <input
+                  type="number"
+                  placeholder="কত টাকার লেনদেন পোস্টিং হবে"
+                  value={supTxnAmount || ''}
+                  onChange={(e) => setSupTxnAmount(Math.max(0, parseFloat(e.target.value) || 0))}
+                  className="w-full p-2.5 bg-slate-50 border border-gray-200 rounded-xl font-bold font-mono focus:outline-none text-slate-900 text-sm"
+                  required
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[10px] font-bold text-gray-500 uppercase">মন্তব্য (Remarks)</label>
+                <textarea
+                  rows={2}
+                  placeholder="এন্ট্রি সংক্রান্ত বিস্তারিত মন্তব্য বা বিবরণ..."
+                  value={supTxnRemarks}
+                  onChange={(e) => setSupTxnRemarks(e.target.value)}
+                  className="w-full p-2.5 bg-slate-50 border border-gray-200 rounded-xl focus:outline-none text-slate-900 text-xs"
+                />
+              </div>
+
+            </div>
+
+            <div className="pt-3 border-t flex justify-end space-x-2">
+              <button 
+                type="button"
+                onClick={() => setShowSupplierTxnModal(false)} 
+                className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-4 py-2.5 rounded-xl cursor-pointer"
+              >
+                বাতিল করুন
+              </button>
+              <button 
+                type="submit"
+                className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-5 py-2.5 rounded-xl cursor-pointer shadow-lg shadow-blue-500/10"
+              >
+                পোস্টিং নিশ্চিত করুন (Post Transaction)
               </button>
             </div>
           </form>
@@ -1005,11 +1290,12 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
       </div>
 
       {/* Navigation Sub-Tabs */}
-      <div className="flex space-x-1.5 p-1 bg-slate-100 rounded-2xl max-w-md">
+      <div className="flex space-x-1.5 p-1 bg-slate-100 rounded-2xl max-w-lg">
         <button
           onClick={() => {
             setActiveTab('customer');
             setSelectedStaffId('');
+            setSelectedSupplierId('');
             setSearchTerm('');
           }}
           className={`flex-1 text-center py-2 text-xs font-black rounded-xl transition-all cursor-pointer ${
@@ -1020,9 +1306,24 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
         </button>
         <button
           onClick={() => {
+            setActiveTab('supplier');
+            setSelectedCustomerId('');
+            setSelectedCompanyId('');
+            setSelectedStaffId('');
+            setSearchTerm('');
+          }}
+          className={`flex-1 text-center py-2 text-xs font-black rounded-xl transition-all cursor-pointer ${
+            activeTab === 'supplier' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          সাপ্লাইয়ার লেজার (Supplier)
+        </button>
+        <button
+          onClick={() => {
             setActiveTab('dsr');
             setSelectedCustomerId('');
             setSelectedCompanyId('');
+            setSelectedSupplierId('');
             setSearchTerm('');
           }}
           className={`flex-1 text-center py-2 text-xs font-black rounded-xl transition-all cursor-pointer ${
@@ -1036,6 +1337,7 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
             setActiveTab('manager');
             setSelectedCustomerId('');
             setSelectedCompanyId('');
+            setSelectedSupplierId('');
             setSearchTerm('');
           }}
           className={`flex-1 text-center py-2 text-xs font-black rounded-xl transition-all cursor-pointer ${
@@ -1055,6 +1357,7 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
             <Search className="w-4 h-4 mr-1.5 text-gray-400" />
             <span>
               {activeTab === 'customer' ? 'গ্রাহক আউটলেট খুজুন' :
+               activeTab === 'supplier' ? 'সাপ্লাইয়ার কোম্পানি খুজুন' :
                activeTab === 'dsr' ? 'ডিএসআর কর্মচারী তালিকা' :
                'ম্যানেজার ও এডমিন অফিস'}
             </span>
@@ -1064,7 +1367,11 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
             <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-3" />
             <input
               type="text"
-              placeholder={activeTab === 'customer' ? 'আউটলেট বা মালিকের নাম লিখুন...' : 'নাম বা ফোন নম্বর দিয়ে ফিল্টার করুন...'}
+              placeholder={
+                activeTab === 'customer' ? 'আউটলেট বা মালিকের নাম লিখুন...' : 
+                activeTab === 'supplier' ? 'সাপ্লাইয়ার বা ব্র্যান্ড নাম লিখুন...' :
+                'নাম বা ফোন নম্বর দিয়ে ফিল্টার করুন...'
+              }
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-9 pr-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:outline-none"
@@ -1111,6 +1418,34 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
                   </span>
                 </button>
               ))
+            ) : activeTab === 'supplier' ? (
+              suppliers.filter(s => 
+                (s.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                (s.companyName || '').toLowerCase().includes(searchTerm.toLowerCase())
+              ).map(sup => {
+                const bal = sup.outstandingBalance || 0;
+                return (
+                  <button
+                    key={sup.id}
+                    onClick={() => {
+                      setSelectedSupplierId(sup.id);
+                    }}
+                    className={`w-full text-left p-3 rounded-xl border transition-all cursor-pointer flex justify-between items-center ${
+                      selectedSupplierId === sup.id 
+                        ? 'bg-blue-50 border-blue-200 shadow-sm' 
+                        : 'bg-white hover:bg-slate-50 border-slate-100'
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="font-bold text-xs text-slate-800 truncate">{sup.name}</p>
+                      <p className="text-[10px] text-gray-400 truncate">Brand: {sup.companyName || 'No Company'}</p>
+                    </div>
+                    <span className={`text-xs font-bold shrink-0 ml-2 ${bal > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                      ৳{bal.toLocaleString()}
+                    </span>
+                  </button>
+                );
+              })
             ) : (
               // Staff Users (DSR / Manager) List Rendering
               filteredStaffList.map(user => {
@@ -1140,7 +1475,8 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
             )}
 
             {((activeTab === 'customer' && filteredCustomers.length === 0) ||
-              (activeTab !== 'customer' && filteredStaffList.length === 0)) && (
+              (activeTab === 'supplier' && suppliers.filter(s => (s.name || '').toLowerCase().includes(searchTerm.toLowerCase())).length === 0) ||
+              (activeTab !== 'customer' && activeTab !== 'supplier' && filteredStaffList.length === 0)) && (
               <p className="text-xs text-gray-400 italic text-center py-10">কোনো তথ্য পাওয়া যায়নি।</p>
             )}
           </div>
@@ -1354,7 +1690,7 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
           )}
 
           {/* B. STAFF (DSR / MANAGER) TABS AUDIT DESK */}
-          {activeTab !== 'customer' && (
+          {(activeTab === 'dsr' || activeTab === 'manager') && (
             <>
               {!selectedStaffId ? (
                 <div className="text-center py-20">
@@ -1523,6 +1859,159 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
                                   <td className="p-3 text-right font-black text-slate-900 bg-slate-50/40">
                                     ৳{entry.balanceAfter.toLocaleString()}
                                   </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </>
+          )}
+
+          {/* C. SUPPLIER TABS AUDIT DESK */}
+          {activeTab === 'supplier' && (
+            <>
+              {!selectedSupplierId ? (
+                <div className="text-center py-20">
+                  <Building2 className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+                  <p className="text-gray-500 font-medium text-sm">কোনো সাপ্লাইয়ার কোম্পানি সিলেক্ট করা হয়নি</p>
+                  <p className="text-xs text-gray-400 mt-1">বামদিকের সাপ্লাইয়ার কোম্পানি তালিকা থেকে একটি কোম্পানি নির্বাচন করে খতিয়ান হিসাব চালু করুন।</p>
+                </div>
+              ) : (
+                <>
+                  {/* Supplier Summary Header */}
+                  {activeSupplier && (
+                    <div className="border-b border-slate-100 pb-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                      <div>
+                        <h3 className="font-extrabold text-gray-900 text-base leading-tight">{activeSupplier.name}</h3>
+                        <p className="text-[11px] text-gray-400">কোম্পানি/ব্র্যান্ড: {activeSupplier.companyName || 'N/A'} | মোবাইল: {activeSupplier.phone || 'N/A'}</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => {
+                            setSupTxnDate(new Date().toISOString().split('T')[0]);
+                            setSupTxnType('PURCHASE_BILL');
+                            setSupTxnAmount(0);
+                            setSupTxnRefNo('');
+                            setSupTxnRemarks('');
+                            setShowSupplierTxnModal(true);
+                          }}
+                          className="flex items-center space-x-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-3 rounded-xl text-xs transition-all shadow-sm cursor-pointer"
+                        >
+                          <PlusCircle className="w-4 h-4" />
+                          <span>নতুন ট্রানজেকশন পোস্টিং</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Supplier outstanding Balance Card */}
+                  {activeSupplier && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="p-4 bg-amber-50 border border-amber-100 rounded-2xl">
+                        <span className="text-[10px] text-amber-600 font-bold uppercase tracking-wider block">কোম্পানির মোট পাওনা (Outstanding Balance)</span>
+                        <h3 className="text-xl font-black font-mono text-amber-900 mt-1">৳{(activeSupplier.outstandingBalance || 0).toLocaleString()}</h3>
+                        <p className="text-[9px] text-amber-700 mt-1 italic">* মালামাল ক্রয় করার পর বিল বকেয়া এবং পেমেন্ট পরিশোধ খতিয়ান হিসেব এখানে ট্র্যাক হয়।</p>
+                      </div>
+                      <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-2xl flex flex-col justify-between">
+                        <div>
+                          <span className="text-[10px] text-emerald-600 font-bold uppercase block tracking-wider">কোম্পানি স্ট্যাটাস</span>
+                          <span className="inline-flex items-center space-x-1 px-2 py-0.5 bg-emerald-100 text-emerald-800 font-bold rounded-lg border border-emerald-200 mt-1 text-[10px]">
+                            <CheckCircle className="w-3 h-3" />
+                            <span>অনুমোদিত সাপ্লায়ার (Approved Supplier)</span>
+                          </span>
+                        </div>
+                        <p className="text-[9px] text-emerald-600 italic mt-2">বিল ও পেমেন্টের সম্পূর্ণ অটো-রিকনসিল খতিয়ান খাতা।</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Historical Supplier Ledger Logs */}
+                  <div className="pt-4 border-t border-slate-100 space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <h4 className="text-xs font-bold text-gray-950 uppercase">ক্রয় বিল ও পেমেন্ট খতিয়ান বিবরণী (Ledger Statement)</h4>
+                        <p className="text-[10px] text-gray-400">কোম্পানির বকেয়া ক্রয় বিল, রিসিভ এবং ক্যাশ পেমেন্ট পরিশোধের খাতা</p>
+                      </div>
+                    </div>
+
+                    {/* Date filters */}
+                    <div className="flex flex-wrap gap-2 items-center bg-slate-50 p-3 rounded-2xl border border-slate-100 text-xs font-semibold text-slate-700">
+                      <span className="text-[10px] font-black text-slate-500 uppercase mr-1">তারিখ ফিল্টার:</span>
+                      <input
+                        type="date"
+                        value={startDate}
+                        onChange={(e) => setStartDate(e.target.value)}
+                        className="bg-white p-1.5 border border-slate-200 rounded-lg font-mono text-xs focus:outline-none"
+                      />
+                      <span className="text-gray-400 text-[10px]">থেকে</span>
+                      <input
+                        type="date"
+                        value={endDate}
+                        onChange={(e) => setEndDate(e.target.value)}
+                        className="bg-white p-1.5 border border-slate-200 rounded-lg font-mono text-xs focus:outline-none"
+                      />
+                      {(startDate || endDate) && (
+                        <button
+                          onClick={() => { setStartDate(''); setEndDate(''); }}
+                          className="bg-slate-200 hover:bg-slate-300 text-slate-700 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                        >
+                          মুছুন
+                        </button>
+                      )}
+                    </div>
+
+                    {loading ? (
+                      <div className="text-center py-8">
+                        <RefreshCw className="w-6 h-6 text-blue-600 animate-spin mx-auto mb-2" />
+                        <p className="text-xs text-gray-400">হিসাব লোড হচ্ছে...</p>
+                      </div>
+                    ) : filteredSupplierLedgerEntries.length === 0 ? (
+                      <div className="text-center py-10 bg-slate-50 rounded-xl border border-dashed border-slate-200 text-xs text-gray-400 italic">
+                        সাপ্লাইয়ার কোম্পানির খাতায় এই ফিল্টার বা তারিখের অধীনে কোনো লেনদেন রেকর্ড পাওয়া যায়নি।
+                      </div>
+                    ) : (
+                      <div className="border border-slate-100 rounded-xl overflow-hidden bg-white">
+                        <table className="w-full text-[11px] text-left">
+                          <thead className="bg-slate-50 text-gray-500 font-bold border-b">
+                            <tr>
+                              <th className="p-3">পোস্টিং তারিখ</th>
+                              <th className="p-3">রেফারেন্স নং</th>
+                              <th className="p-3 text-center">লেনদেনের ধরণ</th>
+                              <th className="p-3 text-right">ক্রয় বিল / ডেবিট (+)</th>
+                              <th className="p-3 text-right">পেমেন্ট পরিশোধ / ক্রেডিট (-)</th>
+                              <th className="p-3 text-right">অবশিষ্ট বকেয়া ব্যালেন্স</th>
+                              <th className="p-3">মন্তব্য / বিবরণ</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100 text-slate-700">
+                            {filteredSupplierLedgerEntries.map((entry) => {
+                              const isDebit = entry.type === 'PURCHASE_BILL' || entry.type === 'PURCHASE';
+                              return (
+                                <tr key={entry.id} className="hover:bg-slate-50/50">
+                                  <td className="p-3 font-medium text-gray-500">{entry.date}</td>
+                                  <td className="p-3 font-bold font-mono text-blue-800">{entry.referenceNo}</td>
+                                  <td className="p-3 text-center">
+                                    <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${
+                                      isDebit ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-emerald-50 text-emerald-700 border border-emerald-100'
+                                    }`}>
+                                      {entry.type === 'PURCHASE_BILL' ? 'ক্রয় বিল' : entry.type === 'PAYMENT' ? 'পরিশোধ' : entry.type === 'RETURN' ? 'মাল ফেরত' : entry.type}
+                                    </span>
+                                  </td>
+                                  <td className="p-3 text-right font-bold text-gray-900">
+                                    {isDebit ? `৳${entry.amount.toLocaleString()}` : '-'}
+                                  </td>
+                                  <td className="p-3 text-right font-bold text-emerald-700">
+                                    {!isDebit ? `৳${entry.amount.toLocaleString()}` : '-'}
+                                  </td>
+                                  <td className="p-3 text-right font-black text-slate-900 bg-slate-50/40">
+                                    ৳{entry.balanceAfter.toLocaleString()}
+                                  </td>
+                                  <td className="p-3 text-gray-500 italic max-w-xs truncate">{entry.remarks || ''}</td>
                                 </tr>
                               );
                             })}

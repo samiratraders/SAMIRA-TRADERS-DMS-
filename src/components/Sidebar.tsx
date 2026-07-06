@@ -44,10 +44,8 @@ export default function Sidebar({ user, activeTab, setActiveTab, onLogout }: Sid
     const items = [
       { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['ALL'] },
       { id: 'customers', label: 'Customers', icon: Users, roles: ['Super Admin', 'Manager', 'Sales Manager', 'DSR', 'Collection Officer'] },
-      { id: 'suppliers', label: 'Suppliers', icon: Truck, roles: ['Super Admin', 'Manager'] },
-      { id: 'companies', label: 'Companies', icon: Building2, roles: ['Super Admin', 'Manager'] },
-      { id: 'products', label: 'Products', icon: Package, roles: ['Super Admin', 'Manager', 'Sales Manager'] },
-      { id: 'inventory', label: 'Inventory', icon: Warehouse, roles: ['Super Admin', 'Manager', 'Sales Manager'] },
+      { id: 'suppliers', label: 'Suppliers & Brands', icon: Truck, roles: ['Super Admin', 'Manager'] },
+      { id: 'inventory', label: 'Inventory & Products', icon: Warehouse, roles: ['Super Admin', 'Manager', 'Sales Manager'] },
       { id: 'sales', label: 'Sales Invoices', icon: FileSpreadsheet, roles: ['Super Admin', 'Manager', 'Sales Manager', 'DSR'] },
       { id: 'dsr', label: 'DSR Panel', icon: ClipboardList, roles: ['Super Admin', 'Manager', 'Sales Manager', 'DSR'] },
       { id: 'purchases', label: 'Purchases', icon: ShoppingBag, roles: ['Super Admin', 'Manager'] },
