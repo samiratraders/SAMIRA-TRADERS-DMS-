@@ -234,6 +234,63 @@ export default function DashboardView({
         </button>
       </div>
 
+      {/* Quick Action Navigation Bar */}
+      <div className="bg-gradient-to-r from-blue-500/10 via-indigo-500/10 to-purple-500/10 p-1 rounded-2xl border border-blue-100/50">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 bg-white rounded-xl p-3 shadow-sm">
+          <button 
+            onClick={() => onQuickAction('sales')}
+            className="flex items-center space-x-3 p-3.5 rounded-xl hover:bg-blue-50 text-blue-700 hover:text-blue-800 transition-all border border-transparent hover:border-blue-100 group cursor-pointer"
+          >
+            <div className="p-2.5 bg-blue-100/60 rounded-lg group-hover:scale-110 transition-transform">
+              <PlusCircle className="w-5 h-5 text-blue-600" />
+            </div>
+            <div className="text-left">
+              <span className="text-[11px] text-blue-500 font-bold block uppercase tracking-wider">Quick Sales</span>
+              <span className="text-xs font-black text-slate-800">Sales Invoice</span>
+            </div>
+          </button>
+          
+          <button 
+            onClick={() => onQuickAction('dsr')}
+            className="flex items-center space-x-3 p-3.5 rounded-xl hover:bg-emerald-50 text-emerald-700 hover:text-emerald-800 transition-all border border-transparent hover:border-emerald-100 group cursor-pointer"
+          >
+            <div className="p-2.5 bg-emerald-100/60 rounded-lg group-hover:scale-110 transition-transform">
+              <Truck className="w-5 h-5 text-emerald-600" />
+            </div>
+            <div className="text-left">
+              <span className="text-[11px] text-emerald-500 font-bold block uppercase tracking-wider">Route Control</span>
+              <span className="text-xs font-black text-slate-800">DSR Panel</span>
+            </div>
+          </button>
+
+          <button 
+            onClick={() => onQuickAction('collections')}
+            className="flex items-center space-x-3 p-3.5 rounded-xl hover:bg-amber-50 text-amber-700 hover:text-amber-800 transition-all border border-transparent hover:border-amber-100 group cursor-pointer"
+          >
+            <div className="p-2.5 bg-amber-100/60 rounded-lg group-hover:scale-110 transition-transform">
+              <DollarSign className="w-5 h-5 text-amber-600" />
+            </div>
+            <div className="text-left">
+              <span className="text-[11px] text-amber-500 font-bold block uppercase tracking-wider">Payments In</span>
+              <span className="text-xs font-black text-slate-800">Collection</span>
+            </div>
+          </button>
+
+          <button 
+            onClick={() => onQuickAction('ledgers')}
+            className="flex items-center space-x-3 p-3.5 rounded-xl hover:bg-purple-50 text-purple-700 hover:text-purple-800 transition-all border border-transparent hover:border-purple-100 group cursor-pointer"
+          >
+            <div className="p-2.5 bg-purple-100/60 rounded-lg group-hover:scale-110 transition-transform">
+              <Receipt className="w-5 h-5 text-purple-600" />
+            </div>
+            <div className="text-left">
+              <span className="text-[11px] text-purple-500 font-bold block uppercase tracking-wider">All Accounts</span>
+              <span className="text-xs font-black text-slate-800">Party Ledgers</span>
+            </div>
+          </button>
+        </div>
+      </div>
+
       {/* Grid of Key Performance Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-5">
         

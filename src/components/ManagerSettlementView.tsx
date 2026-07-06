@@ -91,6 +91,31 @@ export default function ManagerSettlementView() {
   // Interactive Drilldown States
   const [drilldownType, setDrilldownType] = useState<'dues' | 'collections' | 'free' | 'discounts' | 'expenses' | 'damages' | null>(null);
 
+  // Admin Approval & Audit Trail States
+  const [showApproveModal, setShowApproveModal] = useState(false);
+  const [sheetShortageTypes, setSheetShortageTypes] = useState<Record<string, 'SHORTAGE' | 'SALARY_ADVANCE'>>({});
+  const [selectedStaffForAudit, setSelectedStaffForAudit] = useState<{ id: string; name: string } | null>(null);
+  const [auditEntries, setAuditEntries] = useState<any[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  const fetchStaffAuditTrail = async (staffId: string) => {
+    try {
+      setAuditLoading(true);
+      const q = query(collection(db, 'staffLedgers'), where('staffId', '==', staffId));
+      const snap = await getDocs(q);
+      const entries: any[] = [];
+      snap.forEach(doc => {
+        entries.push(doc.data());
+      });
+      entries.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+      setAuditEntries(entries);
+    } catch (err) {
+      console.error('Error fetching staff audit trail:', err);
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
   const loadData = async () => {
     try {
       setLoading(true);
@@ -455,12 +480,9 @@ export default function ManagerSettlementView() {
     const targetSettlement = activeSettlement;
     if (!targetSettlement) return;
 
-    if (!window.confirm('আপনি কি এই ডেইলি সেটেলমেন্ট এবং সমন্বিত সকল লেনদেন চূড়ান্ত বুকিং করতে চান? এটি ইনভেন্টরি হ্রাস এবং লেজার খতিয়ান আপডেট করবে।')) {
-      return;
-    }
-
     try {
       setLoading(true);
+      setShowApproveModal(false);
       const usersSnap = await getDocs(collection(db, 'users'));
       const batch = writeBatch(db);
 
@@ -568,18 +590,19 @@ export default function ManagerSettlementView() {
           // F. Shortages DSR ledger entries
           if (sheet.reconciliation && sheet.reconciliation.shortage > 0) {
             const shortageEntryId = `ledger-dsr-short-${sheet.id}-${Date.now()}`;
+            const selectedType = sheetShortageTypes[sheet.id] || 'SHORTAGE';
             batch.set(doc(db, 'staffLedgers', shortageEntryId), {
               id: shortageEntryId,
               staffId: sheet.dsrId,
               staffName: sheet.dsrName,
               staffRole: 'DSR',
-              type: 'SHORTAGE',
+              type: selectedType,
               referenceId: sheet.id,
               referenceNo: `DSR-${sheet.id.slice(-5).toUpperCase()}`,
               date: sheet.date,
               amount: sheet.reconciliation.shortage,
               balanceAfter: sheet.reconciliation.shortage,
-              remarks: `DSR Route Shortage shortage recorded from Route ${sheet.route}`,
+              remarks: `DSR Route Shortage recorded from Route ${sheet.route} categorized as ${selectedType === 'SHORTAGE' ? 'Recoverable Debt (আদায়যোগ্য দেনা)' : 'Salary Advance (বেতন অগ্রিম)'}`,
               createdAt: new Date().toISOString()
             });
           }
@@ -605,11 +628,9 @@ export default function ManagerSettlementView() {
         });
 
         // Update manager's user profile outstanding shortages
-        const managerRef = doc(db, 'users', targetSettlement.submittedBy);
-        // Find if user profile exists from fetched usersSnap
-        const managerObj = usersSnap.docs.find(u => u.id === targetSettlement.submittedBy)?.data() as UserProfile | undefined;
+        const managerObj = usersSnap.docs.find(u => u.id === targetSettlement.submittedBy)?.data();
         const prevShortage = managerObj?.outstandingShortage || 0;
-        batch.update(managerRef, {
+        batch.update(doc(db, 'users', targetSettlement.submittedBy), {
           outstandingShortage: prevShortage + targetSettlement.shortage
         });
       }
@@ -635,6 +656,7 @@ export default function ManagerSettlementView() {
       setLoading(false);
     }
   };
+
 
   const handlePrint = () => {
     window.print();
@@ -1092,7 +1114,7 @@ export default function ManagerSettlementView() {
                   {/* Admin role can approve */}
                   {currentUser?.role === UserRole.SUPER_ADMIN ? (
                     <button
-                      onClick={handleAdminApprove}
+                      onClick={() => setShowApproveModal(true)}
                       className="flex items-center space-x-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-6 rounded-xl text-xs shadow-lg shadow-emerald-500/15 cursor-pointer"
                     >
                       <CheckCircle className="w-4 h-4" />
@@ -1130,6 +1152,211 @@ export default function ManagerSettlementView() {
 
           </div>
 
+        </div>
+      )}
+
+      {/* ADMIN APPROVAL REVIEW MODAL */}
+      {showApproveModal && activeSettlement && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-3xl w-full p-6 shadow-2xl relative border border-gray-100 flex flex-col max-h-[90vh]">
+            <button 
+              onClick={() => setShowApproveModal(false)} 
+              className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            
+            <div className="border-b pb-3 mb-4">
+              <h3 className="text-lg font-extrabold text-slate-900 flex items-center uppercase tracking-wide">
+                <CheckCircle className="w-6 h-6 text-emerald-600 mr-2" />
+                <span>데일리 সেটেলমেন্ট এডমিন যাচাইকরণ ও চূড়ান্ত অনুমোদন</span>
+              </h3>
+              <p className="text-xs text-gray-400 mt-1">
+                তারিখ: <strong className="font-mono text-slate-700">{selectedDate}</strong> | ম্যানেজার: <strong className="text-slate-700">{activeSettlement.submittedByName}</strong>
+              </p>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-5 pr-1 scrollbar-thin">
+              {/* Financial Summary Card */}
+              <div className="grid grid-cols-3 gap-4 bg-slate-50 p-4 rounded-2xl border border-slate-100 text-center">
+                <div className="space-y-1">
+                  <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider block">ম্যানেজার নগদ ব্যালেন্স</span>
+                  <div className="text-lg font-mono font-black text-slate-800">৳{calculatedManagerBalance.toLocaleString()}</div>
+                </div>
+                <div className="space-y-1 border-x px-2">
+                  <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider block">নগদ এডমিন হস্তান্তর</span>
+                  <div className="text-lg font-mono font-black text-emerald-600">৳{activeSettlement.adminTransfer.toLocaleString()}</div>
+                </div>
+                <div className="space-y-1">
+                  <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider block">আজকের মোট ক্যাশ শর্ট</span>
+                  <div className="text-lg font-mono font-black text-red-600">৳{currentShortage.toLocaleString()}</div>
+                </div>
+              </div>
+
+              {/* DSR sheets shortage breakdown */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider">রুট ও ডিএসআর ভিত্তিক শর্ট সমন্বয় ডেস্ক</h4>
+                
+                <div className="border border-slate-100 rounded-2xl overflow-hidden bg-slate-50/50">
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-slate-100 text-[10px] font-bold text-gray-500 uppercase tracking-wider font-mono border-b">
+                      <tr>
+                        <th className="p-3">রুট / ডিএসআর (Route & DSR)</th>
+                        <th className="p-3 text-right">নেট বিক্রি</th>
+                        <th className="p-3 text-right">ক্যাশ রিসিভ</th>
+                        <th className="p-3 text-right">ঘাটতি টাকা (Short)</th>
+                        <th className="p-3 text-center">ঘাটতি পোস্টিং টাইপ (Adjustment Type)</th>
+                        <th className="p-3 text-center">ইতিহাস</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {todaySheets.map((sheet) => {
+                        const shortage = sheet.reconciliation?.shortage || 0;
+                        const selectedType = sheetShortageTypes[sheet.id] || 'SHORTAGE';
+                        return (
+                          <tr key={sheet.id} className="hover:bg-white bg-white/40 transition-colors">
+                            <td className="p-3 font-medium">
+                              <div className="font-bold text-slate-900">{sheet.route}</div>
+                              <div className="text-[10px] text-gray-400">Rep: {sheet.dsrName}</div>
+                            </td>
+                            <td className="p-3 text-right font-mono">৳{(sheet.reconciliation?.netSales || 0).toLocaleString()}</td>
+                            <td className="p-3 text-right font-mono text-emerald-600">৳{(sheet.reconciliation?.cashReceived || 0).toLocaleString()}</td>
+                            <td className="p-3 text-right font-mono font-bold text-red-600">
+                              {shortage > 0 ? `৳${shortage.toLocaleString()}` : '৳০'}
+                            </td>
+                            <td className="p-3 text-center">
+                              {shortage > 0 ? (
+                                <select
+                                  value={selectedType}
+                                  onChange={(e) => setSheetShortageTypes({
+                                    ...sheetShortageTypes,
+                                    [sheet.id]: e.target.value as 'SHORTAGE' | 'SALARY_ADVANCE'
+                                  })}
+                                  className="p-1.5 bg-white border border-gray-200 rounded-lg text-[10px] font-bold focus:outline-none"
+                                >
+                                  <option value="SHORTAGE">Recoverable Debt (আদায়যোগ্য দেনা)</option>
+                                  <option value="SALARY_ADVANCE">Salary Advance (বেতন অগ্রিম)</option>
+                                </select>
+                              ) : (
+                                <span className="text-[10px] text-gray-400 italic">কোনো ঘাটতি নেই</span>
+                              )}
+                            </td>
+                            <td className="p-3 text-center">
+                              <button
+                                onClick={() => {
+                                  setSelectedStaffForAudit({ id: sheet.dsrId, name: sheet.dsrName });
+                                  fetchStaffAuditTrail(sheet.dsrId);
+                                }}
+                                className="p-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md transition-colors"
+                                title="পূর্বের অডিট ট্রেইল দেখুন"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {todaySheets.length === 0 && (
+                        <tr>
+                          <td colSpan={6} className="p-8 text-center text-gray-400 italic">
+                            আজ কোনো লোডশীট সাবমিট বা রেকর্ড করা হয়নি।
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t flex justify-end space-x-2.5 mt-4">
+              <button
+                onClick={() => setShowApproveModal(false)}
+                className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-5 py-2.5 rounded-xl cursor-pointer"
+              >
+                বাতিল করুন
+              </button>
+              <button
+                onClick={handleAdminApprove}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-6 py-2.5 rounded-xl cursor-pointer shadow-lg shadow-emerald-500/10 flex items-center space-x-1.5"
+              >
+                <CheckCircle className="w-4 h-4" />
+                <span>অনুমোদন ও ফাইনাল বুকিং করুন (Approve & Book)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* STAFF AUDIT TRAIL MODAL OVERLAY */}
+      {selectedStaffForAudit && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl relative border border-gray-100 flex flex-col max-h-[80vh]">
+            <button 
+              onClick={() => setSelectedStaffForAudit(null)} 
+              className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            
+            <div className="border-b pb-3 mb-4">
+              <h3 className="text-base font-black text-slate-900 flex items-center uppercase tracking-wide">
+                <FileText className="w-5 h-5 text-blue-600 mr-2" />
+                <span>ঘাটতি ও সমন্বয় অডিট ট্রেইল (Audit Trail)</span>
+              </h3>
+              <p className="text-xs text-gray-400 mt-1">
+                কর্মী: <strong className="text-slate-700">{selectedStaffForAudit.name}</strong>
+              </p>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-3 pr-1 scrollbar-thin">
+              {auditLoading ? (
+                <div className="text-center py-10">
+                  <RefreshCw className="w-6 h-6 text-blue-600 animate-spin mx-auto mb-2" />
+                  <p className="text-xs text-gray-400">অডিট ইতিহাস লোড হচ্ছে...</p>
+                </div>
+              ) : auditEntries.length === 0 ? (
+                <p className="text-xs text-gray-400 italic text-center py-10">এই কর্মীর জন্য পূর্বে কোনো ঘাটতি বা অগ্রিম সমন্বয়ের রেকর্ড পাওয়া যায়নি।</p>
+              ) : (
+                <div className="space-y-2">
+                  {auditEntries.map((entry, index) => {
+                    const isDebit = entry.type === 'SHORTAGE' || entry.type === 'SALARY_ADVANCE';
+                    return (
+                      <div key={index} className="p-3 bg-slate-50 border border-slate-100 rounded-xl flex justify-between items-center text-xs">
+                        <div>
+                          <div className="flex items-center space-x-2">
+                            <span className="font-bold text-slate-800 font-mono">{entry.date}</span>
+                            <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold ${
+                              isDebit ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'
+                            }`}>
+                              {entry.type === 'SHORTAGE' ? 'Recoverable Debt' : entry.type === 'SALARY_ADVANCE' ? 'Salary Advance' : entry.type}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-gray-400 mt-1">{entry.remarks || 'কোনো মন্তব্য নেই'}</p>
+                          <p className="text-[9px] text-gray-400 font-mono">Ref: {entry.referenceNo}</p>
+                        </div>
+                        <div className="text-right">
+                          <span className={`font-mono font-black ${isDebit ? 'text-red-600' : 'text-emerald-600'}`}>
+                            {isDebit ? '+' : '-'} ৳{entry.amount.toLocaleString()}
+                          </span>
+                          <div className="text-[9px] text-gray-400">Balance: ৳{entry.balanceAfter.toLocaleString()}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-4 border-t flex justify-end mt-4">
+              <button
+                onClick={() => setSelectedStaffForAudit(null)}
+                className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-5 py-2 px-4 rounded-xl cursor-pointer"
+              >
+                বন্ধ করুন
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -44,6 +44,7 @@ export interface Supplier {
   address: string;
   companyId: string; // Supplier of which company
   companyName: string;
+  outstandingBalance?: number;
   createdAt: string;
 }
 

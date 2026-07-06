@@ -43,6 +43,7 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
 
   // New Invoice Form
   const [customerId, setCustomerId] = useState('');
+  const [selectedRoute, setSelectedRoute] = useState('');
   const [companyId, setCompanyId] = useState('');
   const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().split('T')[0]);
   const [items, setItems] = useState<InvoiceItem[]>([]);
@@ -52,8 +53,8 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
 
   // Single item adder state
   const [currentProductId, setCurrentProductId] = useState('');
-  const [currentQty, setCurrentQty] = useState<number>(1);
-  const [qtyMode, setQtyMode] = useState<'UNITS' | 'CARTONS'>('UNITS');
+  const [currentCtn, setCurrentCtn] = useState<number>(0);
+  const [currentPcs, setCurrentPcs] = useState<number>(0);
 
   const loadData = async () => {
     try {
@@ -99,13 +100,15 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
 
   const handleOpenAddModal = () => {
     setCustomerId('');
+    setSelectedRoute('');
     setCompanyId('');
     setItems([]);
     setDiscount(0);
     setPaymentReceived(0);
     setPaymentMethod('CASH');
     setCurrentProductId('');
-    setCurrentQty(1);
+    setCurrentCtn(0);
+    setCurrentPcs(0);
     setIsAddModalOpen(true);
   };
 
@@ -113,17 +116,21 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
   const availableProducts = products.filter(p => p.companyId === companyId);
 
   const handleAddItem = () => {
-    if (!currentProductId || currentQty <= 0) return;
+    if (!currentProductId) return;
     const prod = products.find(p => p.id === currentProductId);
     if (!prod) return;
 
-    // Calculate final units qty based on mode
-    const units = qtyMode === 'CARTONS' ? currentQty * prod.cartonSize : currentQty;
+    // Calculate final units qty based on carton and pieces inputs
+    const units = (currentCtn * prod.cartonSize) + currentPcs;
+    if (units <= 0) {
+      alert('দয়া করে কার্টুন অথবা পিস এর ঘরে সঠিক পরিমাণ লিখুন!');
+      return;
+    }
     const cartonQty = units / prod.cartonSize;
 
     // Check primary stock
     if (prod.stockCount < units) {
-      alert(`Insufficient primary depot stock! Available: ${prod.stockCount} units, Selected: ${units} units.`);
+      alert(`স্টকে পর্যাপ্ত পরিমাণ পণ্য নেই! উপলব্ধ স্টক: ${prod.stockCount} পিস, এন্ট্রি করেছেন: ${units} পিস।`);
       return;
     }
 
@@ -132,7 +139,7 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
     if (existing) {
       const newQty = existing.qty + units;
       if (prod.stockCount < newQty) {
-        alert(`Insufficient primary depot stock for updated quantity!`);
+        alert(`স্টকে পর্যাপ্ত পরিমাণ পণ্য নেই!`);
         return;
       }
       setItems(prev => prev.map(i => i.productId === currentProductId ? {
@@ -155,7 +162,8 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
 
     // Reset single item state
     setCurrentProductId('');
-    setCurrentQty(1);
+    setCurrentCtn(0);
+    setCurrentPcs(0);
   };
 
   const handleRemoveItem = (prodId: string) => {
@@ -172,14 +180,15 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
 
   const handleCreateInvoice = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!customerId || !companyId || items.length === 0) {
-      alert('Please fill out customer, company, and add at least one product.');
+    if (!companyId || !selectedRoute || items.length === 0) {
+      alert('Please fill out SR Route/Area, Brand Company, and add at least one product SKU.');
       return;
     }
 
-    const customerObj = customers.find(c => c.id === customerId);
     const companyObj = companies.find(c => c.id === companyId);
-    if (!customerObj || !companyObj) return;
+    if (!companyObj) return;
+
+    const customerObj = customerId ? customers.find(c => c.id === customerId) : null;
 
     try {
       setLoading(true);
@@ -197,9 +206,9 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
         id: invoiceId,
         invoiceNo,
         date: invoiceDate,
-        customerId,
-        customerName: customerObj.name,
-        shopName: customerObj.shopName,
+        customerId: customerId || 'walk-in',
+        customerName: customerObj ? customerObj.name : 'Spot Client',
+        shopName: customerObj ? customerObj.shopName : 'Generic Outlet / Area Sale',
         companyId,
         companyName: companyObj.name,
         items,
@@ -208,8 +217,8 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
         grandTotal,
         paymentReceived,
         paymentMethod,
-        route: customerObj.route,
-        area: customerObj.area,
+        route: customerObj ? customerObj.route : selectedRoute,
+        area: customerObj ? customerObj.area : selectedRoute,
         status,
         createdAt: new Date().toISOString()
       };
@@ -225,39 +234,41 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
         }
       }
 
-      // 3. Update Customer Outstanding Company-Wise Dues
-      const currentDues = customerObj.dues || {};
-      const previousCompanyDue = currentDues[companyId] || 0;
-      
-      // If payment mode is DUE or there is partial due, increase company due
-      const newCompanyDue = previousCompanyDue + dueAmt;
-      const updatedDues = {
-        ...currentDues,
-        [companyId]: newCompanyDue
-      };
-      
-      const newTotalDue = Object.values(updatedDues).reduce((s: number, a: unknown) => s + (Number(a) || 0), 0);
+      // 3. Update Customer Outstanding Company-Wise Dues & Ledger (if customer is selected)
+      if (customerObj) {
+        const currentDues = customerObj.dues || {};
+        const previousCompanyDue = currentDues[companyId] || 0;
+        
+        // If payment mode is DUE or there is partial due, increase company due
+        const newCompanyDue = previousCompanyDue + dueAmt;
+        const updatedDues = {
+          ...currentDues,
+          [companyId]: newCompanyDue
+        };
+        
+        const newTotalDue = Object.values(updatedDues).reduce((s: number, a: unknown) => s + (Number(a) || 0), 0);
 
-      batch.update(doc(db, 'customers', customerId), {
-        dues: updatedDues,
-        totalDue: newTotalDue
-      });
+        batch.update(doc(db, 'customers', customerId), {
+          dues: updatedDues,
+          totalDue: newTotalDue
+        });
 
-      // 4. Record Customer Ledger Entry
-      const ledgerEntryId = `ledger-${invoiceId}`;
-      batch.set(doc(db, 'ledgers', ledgerEntryId), {
-        id: ledgerEntryId,
-        customerId,
-        companyId,
-        companyName: companyObj.name,
-        type: 'INVOICE',
-        referenceId: invoiceId,
-        referenceNo: invoiceNo,
-        date: invoiceDate,
-        amount: grandTotal,
-        balanceAfter: newCompanyDue,
-        createdAt: new Date().toISOString()
-      });
+        // 4. Record Customer Ledger Entry
+        const ledgerEntryId = `ledger-${invoiceId}`;
+        batch.set(doc(db, 'ledgers', ledgerEntryId), {
+          id: ledgerEntryId,
+          customerId,
+          companyId,
+          companyName: companyObj.name,
+          type: 'INVOICE',
+          referenceId: invoiceId,
+          referenceNo: invoiceNo,
+          date: invoiceDate,
+          amount: grandTotal,
+          balanceAfter: newCompanyDue,
+          createdAt: new Date().toISOString()
+        });
+      }
 
       await batch.commit();
 
@@ -267,8 +278,8 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
         userName,
         userRole,
         'INVOICE_CREATE',
-        `Created Sales Invoice #${invoiceNo} for customer ${customerObj.name} (${customerObj.shopName}) - Total: ৳${grandTotal}`,
-        { invoiceId, invoiceNo, grandTotal, customerId, companyId }
+        `Created Sales Invoice #${invoiceNo} for customer ${customerObj ? customerObj.name : 'Spot Client'} (${customerObj ? customerObj.shopName : 'Generic Outlet'}) - Total: ৳${grandTotal}`,
+        { invoiceId, invoiceNo, grandTotal, customerId: customerId || 'walk-in', companyId }
       );
 
       setIsAddModalOpen(false);
@@ -377,28 +388,60 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
 
             <form onSubmit={handleCreateInvoice} className="space-y-4">
               {/* Header Fields */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Bill Date</label>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Bill Date *</label>
                   <input
                     type="date"
                     required
                     value={invoiceDate}
                     onChange={(e) => setInvoiceDate(e.target.value)}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Customer / Retail Outlet *</label>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">SR Area / Route * (Mandatory)</label>
+                  <div className="flex gap-2">
+                    <select
+                      value={selectedRoute}
+                      onChange={(e) => setSelectedRoute(e.target.value)}
+                      className="flex-1 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold"
+                    >
+                      <option value="">Select Existing Route</option>
+                      {Array.from(new Set(customers.map(c => c.route).filter(Boolean))).map(r => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      placeholder="বা নতুন রুট লিখুন"
+                      value={selectedRoute}
+                      onChange={(e) => setSelectedRoute(e.target.value)}
+                      className="w-1/2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-blue-700"
+                      required
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Customer / Retail Outlet (Optional)</label>
                   <select
-                    required
                     value={customerId}
-                    onChange={(e) => setCustomerId(e.target.value)}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      setCustomerId(id);
+                      const selectedCust = customers.find(c => c.id === id);
+                      if (selectedCust && selectedCust.route) {
+                        setSelectedRoute(selectedCust.route);
+                      }
+                    }}
                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs"
                   >
-                    <option value="">Select Customer</option>
+                    <option value="">Select Customer (ঐচ্ছিক)</option>
                     {customers.map(c => (
-                      <option key={c.id} value={c.id}>{c.shopName} ({c.name})</option>
+                      <option key={c.id} value={c.id}>{c.shopName} ({c.name}) - {c.route}</option>
                     ))}
                   </select>
                 </div>
@@ -411,7 +454,7 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
                       setCompanyId(e.target.value);
                       setItems([]); // Clear items if company changes to prevent brand mixing
                     }}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs"
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold"
                   >
                     <option value="">Select Company</option>
                     {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -424,46 +467,56 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
                 <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
                   <p className="text-xs font-bold text-slate-800 mb-3 flex items-center">
                     <ShoppingCart className="w-4 h-4 mr-1 text-slate-500" />
-                    <span>Select Products of Selected Company</span>
+                    <span>সিলেক্ট করুন (Select Products of Selected Company)</span>
                   </p>
 
                   <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
                     <div className="sm:col-span-2">
-                      <label className="block text-[10px] font-bold text-gray-500 mb-1">Product SKU</label>
+                      <label className="block text-[10px] font-bold text-gray-500 mb-1">পণ্য (Product SKU)</label>
                       <select
                         value={currentProductId}
-                        onChange={(e) => setCurrentProductId(e.target.value)}
-                        className="w-full p-2 bg-white border border-slate-200 rounded text-xs"
+                        onChange={(e) => {
+                          setCurrentProductId(e.target.value);
+                          setCurrentCtn(0);
+                          setCurrentPcs(0);
+                        }}
+                        className="w-full p-2 bg-white border border-slate-200 rounded text-xs focus:ring-2 focus:ring-blue-500/20"
                       >
                         <option value="">Select Product SKU</option>
                         {availableProducts.map(p => (
                           <option key={p.id} value={p.id}>
-                            {p.name} (Stock: {p.stockCount} Units, ৳{p.retailPrice}/unit)
+                            {p.name} (স্টক: {p.stockCount} পিস)
                           </option>
                         ))}
                       </select>
+                      {currentProductId && products.find(p => p.id === currentProductId) && (
+                        <div className="text-[10px] text-blue-600 font-bold mt-1">
+                          📦 প্যাকিং সাইজ: ১ কার্টুন = {products.find(p => p.id === currentProductId)?.cartonSize} পিস (৳{((products.find(p => p.id === currentProductId)?.retailPrice || 0) * (products.find(p => p.id === currentProductId)?.cartonSize || 1)).toLocaleString()} / কার্টুন)
+                        </div>
+                      )}
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-bold text-gray-500 mb-1">Sales Mode</label>
-                      <select
-                        value={qtyMode}
-                        onChange={(e) => setQtyMode(e.target.value as 'UNITS' | 'CARTONS')}
-                        className="w-full p-2 bg-white border border-slate-200 rounded text-xs"
-                      >
-                        <option value="UNITS">Pcs (Loose)</option>
-                        <option value="CARTONS">Cartons</option>
-                      </select>
+                      <label className="block text-[10px] font-bold text-gray-500 mb-1">কার্টুন পরিমাণ (Carton)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="0"
+                        value={currentCtn || ''}
+                        onChange={(e) => setCurrentCtn(Math.max(0, parseInt(e.target.value) || 0))}
+                        className="w-full p-2 bg-white border border-slate-200 rounded text-xs text-center font-bold"
+                      />
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-bold text-gray-500 mb-1">Quantity</label>
+                      <label className="block text-[10px] font-bold text-gray-500 mb-1">পিস পরিমাণ (Pieces / Loose)</label>
                       <div className="flex space-x-1">
                         <input
                           type="number"
-                          min={1}
-                          value={currentQty}
-                          onChange={(e) => setCurrentQty(parseInt(e.target.value) || 1)}
+                          min="0"
+                          placeholder="0"
+                          value={currentPcs || ''}
+                          onChange={(e) => setCurrentPcs(Math.max(0, parseInt(e.target.value) || 0))}
                           className="w-full p-2 bg-white border border-slate-200 rounded text-xs text-center font-bold"
                         />
                         <button

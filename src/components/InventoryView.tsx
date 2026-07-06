@@ -39,7 +39,8 @@ export default function InventoryView() {
 
   // Selected single product to add to transaction list
   const [currentProductId, setCurrentProductId] = useState('');
-  const [currentQtyCartons, setCurrentQtyCartons] = useState(1);
+  const [currentCtn, setCurrentCtn] = useState<number>(0);
+  const [currentPcs, setCurrentPcs] = useState<number>(0);
 
   const loadData = async () => {
     try {
@@ -74,39 +75,44 @@ export default function InventoryView() {
   }, []);
 
   const handleAddTransferItem = () => {
-    if (!currentProductId || currentQtyCartons <= 0) {
-      alert('Please select a product and positive carton quantity.');
-      return;
-    }
+    if (!currentProductId) return;
 
     const prod = products.find(p => p.id === currentProductId);
     if (!prod) return;
 
+    const units = (currentCtn * prod.cartonSize) + currentPcs;
+    if (units <= 0) {
+      alert('দয়া করে কার্টুন বা পিস এর ঘরে সঠিক সংখ্যা দিন।');
+      return;
+    }
+
+    const ctnQty = units / prod.cartonSize;
+
     // Check if enough primary stock exists
-    const totalRequiredUnits = currentQtyCartons * prod.cartonSize;
-    if (prod.stockCount < totalRequiredUnits) {
-      alert(`Insufficient stock in Primary Depot. Available: ${prod.stockCount} units, Required: ${totalRequiredUnits} units.`);
+    if (prod.stockCount < units) {
+      alert(`স্টকে পর্যাপ্ত পরিমাণ পণ্য নেই! উপলব্ধ স্টক: ${prod.stockCount} পিস, রিকোয়ার্ড: ${units} পিস।`);
       return;
     }
 
     // Check if already in list
     const existing = transferProducts.find(item => item.productId === currentProductId);
     if (existing) {
-      const newQty = existing.qtyCartons + currentQtyCartons;
+      const newQty = existing.qtyCartons + ctnQty;
       if (prod.stockCount < newQty * prod.cartonSize) {
-        alert('Insufficient stock for the updated quantity.');
+        alert('স্টকে পর্যাপ্ত পরিমাণ পণ্য নেই!');
         return;
       }
       setTransferProducts(prev => prev.map(item => 
         item.productId === currentProductId ? { ...item, qtyCartons: newQty } : item
       ));
     } else {
-      setTransferProducts(prev => [...prev, { productId: currentProductId, qtyCartons: currentQtyCartons }]);
+      setTransferProducts(prev => [...prev, { productId: currentProductId, qtyCartons: ctnQty }]);
     }
 
     // Reset selectors
     setCurrentProductId('');
-    setCurrentQtyCartons(1);
+    setCurrentCtn(0);
+    setCurrentPcs(0);
   };
 
   const handleRemoveTransferItem = (prodId: string) => {
@@ -354,28 +360,49 @@ export default function InventoryView() {
                   <span>Choose Product to Allocate</span>
                 </p>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
                   <div className="sm:col-span-2">
                     <label className="block text-[10px] font-bold text-gray-500 mb-1">Product</label>
                     <select
                       value={currentProductId}
-                      onChange={(e) => setCurrentProductId(e.target.value)}
+                      onChange={(e) => {
+                        setCurrentProductId(e.target.value);
+                        setCurrentCtn(0);
+                        setCurrentPcs(0);
+                      }}
                       className="w-full p-2 bg-white border border-slate-200 rounded text-xs"
                     >
                       <option value="">Select product to transfer</option>
                       {products.map(p => (
-                        <option key={p.id} value={p.id}>{p.name} (Avail: {p.stockCount} units)</option>
+                        <option key={p.id} value={p.id}>{p.name} (স্টক: {p.stockCount} পিস)</option>
                       ))}
                     </select>
+                    {currentProductId && products.find(p => p.id === currentProductId) && (
+                      <div className="text-[10px] text-blue-600 font-bold mt-1">
+                        📦 প্যাকিং সাইজ: ১ কার্টুন = {products.find(p => p.id === currentProductId)?.cartonSize} পিস
+                      </div>
+                    )}
                   </div>
                   <div>
-                    <label className="block text-[10px] font-bold text-gray-500 mb-1">Cartons Qty</label>
+                    <label className="block text-[10px] font-bold text-gray-500 mb-1">কার্টুন পরিমাণ (Carton)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={currentCtn || ''}
+                      onChange={(e) => setCurrentCtn(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="w-full p-2 bg-white border border-slate-200 rounded text-xs text-center font-bold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-gray-500 mb-1">পিস পরিমাণ (Pieces / Loose)</label>
                     <div className="flex space-x-1">
                       <input
                         type="number"
-                        min={1}
-                        value={currentQtyCartons}
-                        onChange={(e) => setCurrentQtyCartons(parseInt(e.target.value) || 1)}
+                        min="0"
+                        placeholder="0"
+                        value={currentPcs || ''}
+                        onChange={(e) => setCurrentPcs(Math.max(0, parseInt(e.target.value) || 0))}
                         className="w-full p-2 bg-white border border-slate-200 rounded text-xs text-center font-bold"
                       />
                       <button

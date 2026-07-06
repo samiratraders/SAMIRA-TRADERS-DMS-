@@ -31,7 +31,7 @@ import InventoryView from './components/InventoryView';
 import SalesInvoiceView from './components/SalesInvoiceView';
 import PurchaseView from './components/PurchaseView';
 import CollectionView from './components/CollectionView';
-import CustomerLedgerView from './components/CustomerLedgerView';
+import PartyLedgerView from './components/PartyLedgerView';
 import ExpenseView from './components/ExpenseView';
 import SubDepotView from './components/SubDepotView';
 import ReportsView from './components/ReportsView';
@@ -460,8 +460,8 @@ export default function App() {
         );
       case 'ledgers':
         return (
-          <ViewErrorBoundary viewName="CustomerLedgerView">
-            <CustomerLedgerView />
+          <ViewErrorBoundary viewName="PartyLedgerView">
+            <PartyLedgerView />
           </ViewErrorBoundary>
         );
       case 'expenses':

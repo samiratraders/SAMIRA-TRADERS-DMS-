@@ -30,7 +30,8 @@ export default function PurchaseView() {
 
   // Product single adder
   const [currentProductId, setCurrentProductId] = useState('');
-  const [currentQtyCartons, setCurrentQtyCartons] = useState<number>(1);
+  const [currentCtn, setCurrentCtn] = useState<number>(0);
+  const [currentPcs, setCurrentPcs] = useState<number>(0);
 
   const loadData = async () => {
     try {
@@ -80,7 +81,8 @@ export default function PurchaseView() {
     setPaymentPaid(0);
     setPaymentMethod('CASH');
     setCurrentProductId('');
-    setCurrentQtyCartons(1);
+    setCurrentCtn(0);
+    setCurrentPcs(0);
     setIsAddModalOpen(true);
   };
 
@@ -89,16 +91,22 @@ export default function PurchaseView() {
   const availableProducts = products.filter(p => p.companyId === companyId);
 
   const handleAddItem = () => {
-    if (!currentProductId || currentQtyCartons <= 0) return;
+    if (!currentProductId) return;
     const prod = products.find(p => p.id === currentProductId);
     if (!prod) return;
 
-    const units = currentQtyCartons * prod.cartonSize;
+    const units = (currentCtn * prod.cartonSize) + currentPcs;
+    if (units <= 0) {
+      alert('দয়া করে কার্টুন বা পিস এর ঘরে সঠিক সংখ্যা দিন।');
+      return;
+    }
+    const cartonQty = units / prod.cartonSize;
+
     const existing = items.find(i => i.productId === currentProductId);
 
     if (existing) {
-      const newCartons = existing.qtyCarton + currentQtyCartons;
-      const newQty = newCartons * prod.cartonSize;
+      const newQty = existing.qty + units;
+      const newCartons = newQty / prod.cartonSize;
       setItems(prev => prev.map(i => i.productId === currentProductId ? {
         ...i,
         qtyCarton: newCartons,
@@ -109,7 +117,7 @@ export default function PurchaseView() {
       const newItem: PurchaseItem = {
         productId: prod.id,
         name: prod.name,
-        qtyCarton: currentQtyCartons,
+        qtyCarton: cartonQty,
         qty: units,
         price: prod.purchasePrice,
         total: units * prod.purchasePrice
@@ -118,7 +126,8 @@ export default function PurchaseView() {
     }
 
     setCurrentProductId('');
-    setCurrentQtyCartons(1);
+    setCurrentCtn(0);
+    setCurrentPcs(0);
   };
 
   const handleRemoveItem = (prodId: string) => {
@@ -319,29 +328,58 @@ export default function PurchaseView() {
               {/* Add item */}
               {companyId ? (
                 <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                  <p className="text-xs font-bold text-slate-800 mb-3 flex items-center">
+                    <span>সিলেক্ট করুন (Select Products of Selected Company)</span>
+                  </p>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
                     <div className="sm:col-span-2">
-                      <label className="block text-[10px] font-bold text-gray-500 mb-1">Product SKU</label>
+                      <label className="block text-[10px] font-bold text-gray-500 mb-1">পণ্য (Product SKU)</label>
                       <select
                         value={currentProductId}
-                        onChange={(e) => setCurrentProductId(e.target.value)}
-                        className="w-full p-2.5 bg-white border border-slate-200 rounded text-xs"
+                        onChange={(e) => {
+                          setCurrentProductId(e.target.value);
+                          setCurrentCtn(0);
+                          setCurrentPcs(0);
+                        }}
+                        className="w-full p-2.5 bg-white border border-slate-200 rounded text-xs focus:ring-2 focus:ring-blue-500/20"
                       >
                         <option value="">Select Product to Procurement</option>
                         {availableProducts.map(p => (
-                          <option key={p.id} value={p.id}>{p.name} (Unit cost: ৳{p.purchasePrice}, Ctn size: {p.cartonSize})</option>
+                          <option key={p.id} value={p.id}>
+                            {p.name} (Unit cost: ৳{p.purchasePrice})
+                          </option>
                         ))}
                       </select>
+                      {currentProductId && products.find(p => p.id === currentProductId) && (
+                        <div className="text-[10px] text-blue-600 font-bold mt-1">
+                          📦 প্যাকিং সাইজ: ১ কার্টুন = {products.find(p => p.id === currentProductId)?.cartonSize} পিস (৳{((products.find(p => p.id === currentProductId)?.purchasePrice || 0) * (products.find(p => p.id === currentProductId)?.cartonSize || 1)).toLocaleString()} / কার্টুন)
+                        </div>
+                      )}
                     </div>
+
                     <div>
-                      <label className="block text-[10px] font-bold text-gray-500 mb-1">Cartons Quantity</label>
+                      <label className="block text-[10px] font-bold text-gray-500 mb-1">কার্টুন পরিমাণ (Carton)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="0"
+                        value={currentCtn || ''}
+                        onChange={(e) => setCurrentCtn(Math.max(0, parseInt(e.target.value) || 0))}
+                        className="w-full p-2.5 bg-white border border-slate-200 rounded text-xs text-center font-bold"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-gray-500 mb-1">পিস পরিমাণ (Pieces / Loose)</label>
                       <div className="flex space-x-1">
                         <input
                           type="number"
-                          min={1}
-                          value={currentQtyCartons}
-                          onChange={(e) => setCurrentQtyCartons(parseInt(e.target.value) || 1)}
-                          className="w-full p-2 bg-white border border-slate-200 rounded text-xs text-center font-bold"
+                          min="0"
+                          placeholder="0"
+                          value={currentPcs || ''}
+                          onChange={(e) => setCurrentPcs(Math.max(0, parseInt(e.target.value) || 0))}
+                          className="w-full p-2.5 bg-white border border-slate-200 rounded text-xs text-center font-bold"
                         />
                         <button
                           type="button"
