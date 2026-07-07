@@ -74,6 +74,30 @@ export interface Product {
   stockCount: number; // Primary depot stock
   subDepotStocks: { [subDepotId: string]: number }; // Stocks in sub-depots
   createdAt: string;
+  category?: string;
+  brand?: string;
+  supplierId?: string;
+  supplierName?: string;
+  barcode?: string;
+  sku?: string;
+  unit?: string;
+  wholesalePrice?: number;
+  subDistributorPrice?: number;
+  dealerPrice?: number;
+  unitMargin?: number;
+  cartonMargin?: number;
+  openingStock?: number;
+  damageStock?: number;
+  minimumStock?: number;
+  reorderLevel?: number;
+  productImage?: string;
+  isDeleted?: boolean;
+  history?: Array<{
+    date: string;
+    action: string;
+    user: string;
+    details: string;
+  }>;
 }
 
 export interface InvoiceItem {
@@ -134,6 +158,13 @@ export interface Purchase {
   paymentMethod: 'CASH' | 'BANK_TRANSFER' | 'CREDIT';
   status: 'RECEIVED' | 'ORDERED';
   createdAt: string;
+  discount?: number;
+  transportCost?: number;
+  laborCost?: number;
+  extraCost?: number;
+  others?: number;
+  finalPurchaseCost?: number;
+  isDeleted?: boolean;
 }
 
 export interface Collection {

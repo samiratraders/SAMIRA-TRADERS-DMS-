@@ -45,10 +45,6 @@ class ViewErrorBoundary extends React.Component<
   { children: React.ReactNode; viewName: string },
   { hasError: boolean; error: Error | null }
 > {
-  props!: { children: React.ReactNode; viewName: string };
-  state!: { hasError: boolean; error: Error | null };
-  setState!: (state: Partial<{ hasError: boolean; error: Error | null }>, callback?: () => void) => void;
-
   constructor(props: any) {
     super(props);
     this.state = { hasError: false, error: null };
@@ -180,6 +176,7 @@ export default function App() {
         status: 'ACTIVE',
         createdAt: new Date().toISOString()
       };
+      localStorage.setItem('samira_current_user_name', localAdmin.name);
       setCurrentUser(localAdmin);
       setActiveTab('dashboard');
       return;
@@ -219,6 +216,7 @@ export default function App() {
       });
 
       if (matchedUser) {
+        localStorage.setItem('samira_current_user_name', (matchedUser as any).name || (matchedUser as any).username || 'Admin');
         setCurrentUser(matchedUser);
         setActiveTab('dashboard');
       } else {
@@ -233,6 +231,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    localStorage.removeItem('samira_current_user_name');
     setCurrentUser(null);
     setLoginUsername('');
     setLoginPassword('');

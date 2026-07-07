@@ -24,7 +24,10 @@ import {
   PlusCircle,
   FileSpreadsheet,
   Share2,
-  Save
+  Save,
+  Users,
+  Truck,
+  Briefcase
 } from 'lucide-react';
 import { collection, getDocs, query, where, doc, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -62,6 +65,7 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
   const [staffUsers, setStaffUsers] = useState<UserProfile[]>([]);
   const [staffLedgerEntries, setStaffLedgerEntries] = useState<StaffLedgerEntry[]>([]);
   const [supplierLedgerEntries, setSupplierLedgerEntries] = useState<any[]>([]);
+  const [dsrSheets, setDsrSheets] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -195,12 +199,13 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
         } catch (_) {}
       }
 
-      const [compSnap, custSnap, usersSnap, staffLedgersSnap, supSnap] = await Promise.all([
+      const [compSnap, custSnap, usersSnap, staffLedgersSnap, supSnap, dsrSheetsSnap] = await Promise.all([
         getDocs(collection(db, 'companies')),
         getDocs(collection(db, 'customers')),
         getDocs(collection(db, 'users')),
         getDocs(collection(db, 'staffLedgers')),
-        getDocs(collection(db, 'suppliers'))
+        getDocs(collection(db, 'suppliers')),
+        getDocs(collection(db, 'dsrSheets'))
       ]);
 
       const compList: Company[] = [];
@@ -222,6 +227,10 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
       const supList: any[] = [];
       supSnap.forEach(d => supList.push(d.data()));
       setSuppliers(supList);
+
+      const sheetsList: any[] = [];
+      dsrSheetsSnap.forEach(d => sheetsList.push(d.data()));
+      setDsrSheets(sheetsList);
 
       if (preselectedCustomerId) {
         setSelectedCustomerId(preselectedCustomerId);
@@ -388,15 +397,23 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
     return matchesSearch && matchesArea;
   });
 
-  const dsrList = staffUsers.filter(u => u.role === 'DSR' || u.role === UserRole.DSR);
-  const managerList = staffUsers.filter(u => u.role === 'Manager' || u.role === UserRole.MANAGER || u.role === UserRole.SUPER_ADMIN);
+  const dsrList = staffUsers.filter(u => u.role === UserRole.DSR);
+  const managerList = staffUsers.filter(u => u.role === UserRole.MANAGER || u.role === UserRole.SUPER_ADMIN);
 
   const activeStaffList = activeTab === 'dsr' ? dsrList : managerList;
 
-  const filteredStaffList = activeStaffList.filter(u =>
-    u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.phone.includes(searchTerm)
-  );
+  const filteredStaffList = activeStaffList.filter(u => {
+    const matchesSearch = u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          u.phone.includes(searchTerm);
+    if (!matchesSearch) return false;
+
+    if (activeTab === 'dsr' && selectedArea) {
+      // Find if this DSR has any sheet or connection with the selectedArea
+      const hasSheetInArea = dsrSheets.some(sheet => sheet.dsrId === u.id && sheet.route === selectedArea);
+      return hasSheetInArea;
+    }
+    return true;
+  });
 
   // --- SUBMIT STAFF PAYMENTS / ADJUSTMENT CREDIT / ADVANCE DEBIT ---
   const handleStaffCreditSubmit = async (e: React.FormEvent) => {
@@ -716,6 +733,11 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
       setLoading(false);
     }
   };
+
+  const totalCustomerDues = customers.reduce((sum, c) => sum + (c.totalDue || 0), 0);
+  const totalSupplierDues = suppliers.reduce((sum, s) => sum + (s.outstandingBalance || 0), 0);
+  const totalDsrShortages = dsrList.reduce((sum, u) => sum + (u.outstandingShortage || 0), 0);
+  const totalManagerShortages = managerList.reduce((sum, u) => sum + (u.outstandingShortage || 0), 0);
 
   return (
     <div className="space-y-6" id="ledgers-module">
@@ -1289,22 +1311,41 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
         </div>
       </div>
 
-      {/* Navigation Sub-Tabs */}
-      <div className="flex space-x-1.5 p-1 bg-slate-100 rounded-2xl max-w-lg">
+      {/* Unified Dashboard Category Cards & State-based Filters */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="category-filter-dashboard">
+        
+        {/* Card 1: Customers */}
         <button
+          type="button"
           onClick={() => {
             setActiveTab('customer');
             setSelectedStaffId('');
             setSelectedSupplierId('');
             setSearchTerm('');
           }}
-          className={`flex-1 text-center py-2 text-xs font-black rounded-xl transition-all cursor-pointer ${
-            activeTab === 'customer' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+          className={`flex items-start justify-between p-4 rounded-2xl border text-left transition-all cursor-pointer ${
+            activeTab === 'customer'
+              ? 'bg-gradient-to-br from-indigo-50 to-indigo-100/50 border-indigo-200 shadow-sm ring-2 ring-indigo-600/10'
+              : 'bg-white hover:bg-slate-50 border-slate-100'
           }`}
         >
-          গ্রাহক লেজার (Customer)
+          <div className="space-y-1 min-w-0">
+            <span className="text-[10px] text-indigo-600 font-extrabold uppercase tracking-wider block">কাস্টমার খতিয়ান</span>
+            <span className="text-lg font-black font-mono text-indigo-950 block truncate">
+              ৳{totalCustomerDues.toLocaleString()}
+            </span>
+            <span className="text-[10px] text-slate-500 font-medium block">
+              মোট কাস্টমার: <strong className="text-slate-800">{customers.length}</strong>
+            </span>
+          </div>
+          <div className={`p-2.5 rounded-xl ${activeTab === 'customer' ? 'bg-indigo-600 text-white' : 'bg-indigo-50 text-indigo-600'}`}>
+            <Users className="w-5 h-5" />
+          </div>
         </button>
+
+        {/* Card 2: Suppliers */}
         <button
+          type="button"
           onClick={() => {
             setActiveTab('supplier');
             setSelectedCustomerId('');
@@ -1312,13 +1353,29 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
             setSelectedStaffId('');
             setSearchTerm('');
           }}
-          className={`flex-1 text-center py-2 text-xs font-black rounded-xl transition-all cursor-pointer ${
-            activeTab === 'supplier' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+          className={`flex items-start justify-between p-4 rounded-2xl border text-left transition-all cursor-pointer ${
+            activeTab === 'supplier'
+              ? 'bg-gradient-to-br from-blue-50 to-blue-100/50 border-blue-200 shadow-sm ring-2 ring-blue-600/10'
+              : 'bg-white hover:bg-slate-50 border-slate-100'
           }`}
         >
-          সাপ্লাইয়ার লেজার (Supplier)
+          <div className="space-y-1 min-w-0">
+            <span className="text-[10px] text-blue-600 font-extrabold uppercase tracking-wider block">সাপ্লাইয়ার খতিয়ান</span>
+            <span className="text-lg font-black font-mono text-blue-950 block truncate">
+              ৳{totalSupplierDues.toLocaleString()}
+            </span>
+            <span className="text-[10px] text-slate-500 font-medium block">
+              মোট সাপ্লাইয়ার: <strong className="text-slate-800">{suppliers.length}</strong>
+            </span>
+          </div>
+          <div className={`p-2.5 rounded-xl ${activeTab === 'supplier' ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-600'}`}>
+            <Truck className="w-5 h-5" />
+          </div>
         </button>
+
+        {/* Card 3: DSRs */}
         <button
+          type="button"
           onClick={() => {
             setActiveTab('dsr');
             setSelectedCustomerId('');
@@ -1326,13 +1383,29 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
             setSelectedSupplierId('');
             setSearchTerm('');
           }}
-          className={`flex-1 text-center py-2 text-xs font-black rounded-xl transition-all cursor-pointer ${
-            activeTab === 'dsr' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+          className={`flex items-start justify-between p-4 rounded-2xl border text-left transition-all cursor-pointer ${
+            activeTab === 'dsr'
+              ? 'bg-gradient-to-br from-rose-50 to-rose-100/50 border-rose-200 shadow-sm ring-2 ring-rose-600/10'
+              : 'bg-white hover:bg-slate-50 border-slate-100'
           }`}
         >
-          DSR লেজার
+          <div className="space-y-1 min-w-0">
+            <span className="text-[10px] text-rose-600 font-extrabold uppercase tracking-wider block">DSR লেজার</span>
+            <span className="text-lg font-black font-mono text-rose-950 block truncate">
+              ৳{totalDsrShortages.toLocaleString()}
+            </span>
+            <span className="text-[10px] text-slate-500 font-medium block">
+              মোট ডিএসআর: <strong className="text-slate-800">{dsrList.length}</strong>
+            </span>
+          </div>
+          <div className={`p-2.5 rounded-xl ${activeTab === 'dsr' ? 'bg-rose-600 text-white' : 'bg-rose-50 text-rose-600'}`}>
+            <Briefcase className="w-5 h-5" />
+          </div>
         </button>
+
+        {/* Card 4: Managers */}
         <button
+          type="button"
           onClick={() => {
             setActiveTab('manager');
             setSelectedCustomerId('');
@@ -1340,12 +1413,93 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
             setSelectedSupplierId('');
             setSearchTerm('');
           }}
-          className={`flex-1 text-center py-2 text-xs font-black rounded-xl transition-all cursor-pointer ${
-            activeTab === 'manager' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+          className={`flex items-start justify-between p-4 rounded-2xl border text-left transition-all cursor-pointer ${
+            activeTab === 'manager'
+              ? 'bg-gradient-to-br from-amber-50 to-amber-100/50 border-amber-200 shadow-sm ring-2 ring-amber-600/10'
+              : 'bg-white hover:bg-slate-50 border-slate-100'
           }`}
         >
-          ম্যানেজার লেজার
+          <div className="space-y-1 min-w-0">
+            <span className="text-[10px] text-amber-600 font-extrabold uppercase tracking-wider block">ম্যানেজার লেজার</span>
+            <span className="text-lg font-black font-mono text-amber-950 block truncate">
+              ৳{totalManagerShortages.toLocaleString()}
+            </span>
+            <span className="text-[10px] text-slate-500 font-medium block">
+              মোট ম্যানেজার: <strong className="text-slate-800">{managerList.length}</strong>
+            </span>
+          </div>
+          <div className={`p-2.5 rounded-xl ${activeTab === 'manager' ? 'bg-amber-600 text-white' : 'bg-amber-50 text-amber-600'}`}>
+            <Coins className="w-5 h-5" />
+          </div>
         </button>
+
+      </div>
+
+      {/* Unified Global Date Range Picker Filter Panel */}
+      <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex items-center space-x-2.5">
+          <Calendar className="w-5 h-5 text-indigo-600" />
+          <div>
+            <h4 className="text-xs font-black text-slate-900 leading-none">তারিখ ভিত্তিক লেনদেন ফিল্টার (Global Date Range)</h4>
+            <p className="text-[10px] text-gray-400 mt-1">নির্বাচিত খতিয়ান বা স্টেটমেন্টের তালিকা এই সময়ের ভিত্তিতে পরিমার্জিত হবে।</p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center space-x-1.5 bg-slate-50 border border-slate-200 p-1.5 rounded-xl">
+            <span className="text-[10px] font-bold text-slate-500 uppercase px-1">থেকে:</span>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="bg-white px-2 py-1 border border-slate-100 rounded-lg font-mono text-xs focus:outline-none text-slate-800 font-bold"
+            />
+            <span className="text-[10px] font-bold text-slate-500 uppercase px-1">পর্যন্ত:</span>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="bg-white px-2 py-1 border border-slate-100 rounded-lg font-mono text-xs focus:outline-none text-slate-800 font-bold"
+            />
+          </div>
+          <div className="flex items-center space-x-1">
+            <button
+              type="button"
+              onClick={() => {
+                const today = new Date().toISOString().split('T')[0];
+                setStartDate(today);
+                setEndDate(today);
+              }}
+              className="bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-slate-700 hover:text-indigo-700 px-3 py-2 rounded-xl text-[10px] font-extrabold transition-all cursor-pointer"
+            >
+              আজকে
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const now = new Date();
+                const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+                const today = now.toISOString().split('T')[0];
+                setStartDate(firstDay);
+                setEndDate(today);
+              }}
+              className="bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-slate-700 hover:text-indigo-700 px-3 py-2 rounded-xl text-[10px] font-extrabold transition-all cursor-pointer"
+            >
+              এই মাস
+            </button>
+            {(startDate || endDate) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setStartDate('');
+                  setEndDate('');
+                }}
+                className="bg-rose-50 hover:bg-rose-100 border border-rose-100 text-rose-700 px-3 py-2 rounded-xl text-[10px] font-extrabold transition-all cursor-pointer"
+              >
+                রিসেট করুন
+              </button>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Primary Layout Block */}
@@ -1378,15 +1532,19 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
             />
           </div>
 
-          {activeTab === 'customer' && (
+          {(activeTab === 'customer' || activeTab === 'dsr') && (
             <div className="space-y-1 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
-              <label className="block text-[10px] font-black text-slate-500 uppercase">এরিয়া ফিল্টার (Area/Route Filter)</label>
+              <label className="block text-[10px] font-black text-slate-500 uppercase">
+                {activeTab === 'dsr' ? 'ডিএসআর রুট ফিল্টার (DSR Route Filter)' : 'এরিয়া ফিল্টার (Area/Route Filter)'}
+              </label>
               <select
                 value={selectedArea}
                 onChange={(e) => setSelectedArea(e.target.value)}
                 className="w-full bg-white p-2 border border-slate-200 rounded-lg text-xs font-bold text-blue-700 focus:outline-none"
               >
-                <option value="">-- সকল রুট / এরিয়া (All Route Areas) --</option>
+                <option value="">
+                  {activeTab === 'dsr' ? '-- সকল ডিএসআর রুট (All DSR Routes) --' : '-- সকল রুট / এরিয়া (All Route Areas) --'}
+                </option>
                 {Array.from(new Set(customers.map(c => c.route).filter(Boolean))).map(r => (
                   <option key={r} value={r}>{r}</option>
                 ))}
@@ -1451,25 +1609,52 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
               filteredStaffList.map(user => {
                 const shortage = user.outstandingShortage || 0;
                 return (
-                  <button
+                  <div
                     key={user.id}
                     onClick={() => {
                       setSelectedStaffId(user.id);
                     }}
-                    className={`w-full text-left p-3 rounded-xl border transition-all cursor-pointer flex justify-between items-center ${
+                    className={`w-full text-left p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col gap-2.5 ${
                       selectedStaffId === user.id 
-                        ? 'bg-blue-50 border-blue-200 shadow-sm' 
+                        ? 'bg-blue-50/80 border-blue-200 shadow-sm' 
                         : 'bg-white hover:bg-slate-50 border-slate-100'
                     }`}
                   >
-                    <div className="min-w-0 flex-1">
-                      <p className="font-bold text-xs text-slate-800 truncate">{user.name}</p>
-                      <p className="text-[10px] text-gray-400 truncate">{user.role} • {user.phone}</p>
+                    <div className="flex justify-between items-start w-full">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-bold text-xs text-slate-800 truncate">{user.name}</p>
+                        <p className="text-[10px] text-gray-400 truncate">{user.role} • {user.phone}</p>
+                      </div>
+                      <span className={`text-xs font-bold shrink-0 ml-2 ${shortage > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                        ৳{shortage.toLocaleString()}
+                      </span>
                     </div>
-                    <span className={`text-xs font-bold shrink-0 ml-2 ${shortage > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                      ৳{shortage.toLocaleString()}
-                    </span>
-                  </button>
+                    <div className="flex justify-end pt-1.5 border-t border-dashed border-slate-100" onClick={(e) => e.stopPropagation()}>
+                      <div className="relative">
+                        <select
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (!val) return;
+                            setSelectedStaffId(user.id);
+                            setStaffCreditDate(new Date().toISOString().split('T')[0]);
+                            setStaffCreditType(val as any);
+                            setStaffCreditAmount(0);
+                            setStaffCreditRemarks('');
+                            setShowStaffCreditModal(true);
+                            e.target.value = ''; // Reset select state
+                          }}
+                          className="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold px-2.5 py-1 rounded-lg text-[10px] transition-all cursor-pointer shadow-sm border-none focus:outline-none text-center appearance-none"
+                          defaultValue=""
+                        >
+                          <option value="" disabled className="bg-white text-slate-800">Action Button ▼</option>
+                          <option value="PAYMENT" className="bg-white text-slate-800">Payment Credit (নগদ জমা)</option>
+                          <option value="ADJUSTMENT" className="bg-white text-slate-800">Adjustment Credit (সমন্বয়)</option>
+                          <option value="SALARY_ADVANCE" className="bg-white text-slate-800">Salary Advance (বেতন অগ্রিম)</option>
+                          <option value="SHORTAGE" className="bg-white text-slate-800">Shortage Debit (ক্যাশ ঘাটতি)</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
                 );
               })
             )}
@@ -1719,7 +1904,7 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
                           <Coins className="w-4 h-4" />
                           <span>পেমেন্ট রিসিভ ও লেজার সমন্বয়</span>
                         </button>
-                        {activeTab === 'dsr' && (
+                        {(activeTab === 'dsr' || activeTab === 'manager') && (
                           <button
                             onClick={() => {
                               setStaffCreditDate(new Date().toISOString().split('T')[0]);

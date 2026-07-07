@@ -46,6 +46,7 @@ export default function CollectionView({ userRole, userId, userName }: Collectio
 
   // Modals
   const [isCollectModalOpen, setIsCollectModalOpen] = useState(false);
+  const [isMultiCollectModalOpen, setIsMultiCollectModalOpen] = useState(false);
 
   // Form State
   const [customerId, setCustomerId] = useState('');
@@ -54,6 +55,13 @@ export default function CollectionView({ userRole, userId, userName }: Collectio
   const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'MOBILE_BANKING' | 'CHEQUE'>('CASH');
   const [referenceNo, setReferenceNo] = useState('');
   const [collectionDate, setCollectionDate] = useState(new Date().toISOString().split('T')[0]);
+
+  // Multi-Supplier State
+  const [multiCustomerId, setMultiCustomerId] = useState('');
+  const [multiAmounts, setMultiAmounts] = useState<{ [companyId: string]: number }>({});
+  const [multiPaymentMethod, setMultiPaymentMethod] = useState<'CASH' | 'MOBILE_BANKING' | 'CHEQUE'>('CASH');
+  const [multiReferenceNo, setMultiReferenceNo] = useState('');
+  const [multiCollectionDate, setMultiCollectionDate] = useState(new Date().toISOString().split('T')[0]);
 
   const loadData = async () => {
     try {
@@ -211,6 +219,120 @@ export default function CollectionView({ userRole, userId, userName }: Collectio
     }
   };
 
+  const handleMultiReceivePayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!multiCustomerId) {
+      alert('Please select a customer.');
+      return;
+    }
+
+    const customerObj = customers.find(c => c.id === multiCustomerId);
+    if (!customerObj) return;
+
+    const paymentsToProcess = Object.entries(multiAmounts)
+      .map(([compId, amt]) => ({
+        companyId: compId,
+        amount: amt,
+        companyObj: companies.find(c => c.id === compId)
+      }))
+      .filter(p => p.amount > 0 && p.companyObj);
+
+    if (paymentsToProcess.length === 0) {
+      alert('Please enter a received amount for at least one company.');
+      return;
+    }
+
+    for (const p of paymentsToProcess) {
+      const currentDue = customerObj.dues?.[p.companyId] || 0;
+      if (p.amount > currentDue) {
+        alert(`Entered payment (৳${p.amount}) for ${p.companyObj?.name} exceeds outstanding due (৳${currentDue}).`);
+        return;
+      }
+    }
+
+    try {
+      setLoading(true);
+      const batch = writeBatch(db);
+      const updatedDues = { ...(customerObj.dues || {}) };
+
+      for (const p of paymentsToProcess) {
+        const companyObj = p.companyObj!;
+        const collectionId = 'col-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
+        const collectionNo = 'COL-' + Date.now().toString().slice(-4) + '-' + (companyObj.code || 'GEN');
+
+        const collectionObj: Collection = {
+          id: collectionId,
+          collectionNo,
+          date: multiCollectionDate,
+          customerId: multiCustomerId,
+          customerName: customerObj.name,
+          shopName: customerObj.shopName,
+          companyId: p.companyId,
+          companyName: companyObj.name,
+          amount: p.amount,
+          paymentMethod: multiPaymentMethod,
+          referenceNo: multiReferenceNo || '',
+          route: customerObj.route,
+          area: customerObj.area,
+          collectedById: userId || 'dsr_fallback_uid',
+          collectedByName: userName || 'DSR Sales Field Rep',
+          status: 'PENDING',
+          transferredToManager: false,
+          createdAt: new Date().toISOString()
+        };
+
+        batch.set(doc(db, 'collections', collectionId), collectionObj);
+
+        const currentDue = customerObj.dues?.[p.companyId] || 0;
+        updatedDues[p.companyId] = Math.max(0, currentDue - p.amount);
+
+        const ledgerEntryId = `ledger-${collectionId}`;
+        batch.set(doc(db, 'ledgers', ledgerEntryId), {
+          id: ledgerEntryId,
+          customerId: multiCustomerId,
+          companyId: p.companyId,
+          companyName: companyObj.name,
+          type: 'PAYMENT',
+          referenceId: collectionId,
+          referenceNo: collectionNo,
+          date: multiCollectionDate,
+          amount: p.amount,
+          balanceAfter: updatedDues[p.companyId],
+          createdAt: new Date().toISOString()
+        });
+      }
+
+      const updatedTotalDue = Object.values(updatedDues).reduce((s: number, a: unknown) => s + (Number(a) || 0), 0);
+      batch.update(doc(db, 'customers', multiCustomerId), {
+        dues: updatedDues,
+        totalDue: updatedTotalDue
+      });
+
+      await batch.commit();
+
+      const totalRec = paymentsToProcess.reduce((sum, p) => sum + p.amount, 0);
+      await logActivity(
+        userId,
+        userName,
+        userRole,
+        'PAYMENT_ENTRY',
+        `Recorded Multi-Brand Payment Collection from customer ${customerObj.shopName} - Total: ৳${totalRec} [Pending Approval]`,
+        { customerId: multiCustomerId, totalAmount: totalRec }
+      );
+
+      setIsMultiCollectModalOpen(false);
+      setMultiCustomerId('');
+      setMultiAmounts({});
+      setMultiReferenceNo('');
+      loadData();
+    } catch (err: any) {
+      console.error('Error logging multi payment collection:', err);
+      alert('Failed to log payment: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Field Staff: Click to Transfer Collections to Manager
   const handleTransferToManager = async (colId: string) => {
     try {
@@ -288,14 +410,29 @@ export default function CollectionView({ userRole, userId, userName }: Collectio
           <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Payments Collection</h2>
           <p className="text-sm text-gray-500">Receive outlet cash payments, handle field-rep handovers, and execute manager approvals</p>
         </div>
-        <button
-          onClick={handleOpenCollectModal}
-          id="btn-receive-payment"
-          className="flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Receive Customer Payment</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => {
+              setMultiCustomerId('');
+              setMultiAmounts({});
+              setMultiReferenceNo('');
+              setIsMultiCollectModalOpen(true);
+            }}
+            id="btn-receive-multi-payment"
+            className="flex items-center justify-center space-x-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Multi-Supplier Cashier Screen</span>
+          </button>
+          <button
+            onClick={handleOpenCollectModal}
+            id="btn-receive-payment"
+            className="flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Receive Customer Payment</span>
+          </button>
+        </div>
       </div>
 
       {/* Filters Toolbar */}
@@ -534,6 +671,164 @@ export default function CollectionView({ userRole, userId, userName }: Collectio
                 >
                   <Save className="w-4 h-4" />
                   <span>File Payment</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Multi-Supplier Payment Receipt */}
+      {isMultiCollectModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 overflow-y-auto text-slate-800">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-xl relative max-h-[90vh] overflow-y-auto space-y-4">
+            <button 
+              onClick={() => {
+                setIsMultiCollectModalOpen(false);
+                setMultiCustomerId('');
+                setMultiAmounts({});
+                setMultiReferenceNo('');
+              }} 
+              className="absolute top-4 right-4 p-1 rounded-full hover:bg-gray-100"
+            >
+              <X className="w-5 h-5 text-gray-500" />
+            </button>
+
+            <div>
+              <h3 className="text-lg font-extrabold text-gray-900 mb-0.5">Multi-Supplier Cashier Panel</h3>
+              <p className="text-xs text-gray-400">Record a single payment from an outlet across multiple partner brands/suppliers.</p>
+            </div>
+
+            <form onSubmit={handleMultiReceivePayment} className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Collection Date</label>
+                  <input
+                    type="date"
+                    required
+                    value={multiCollectionDate}
+                    onChange={(e) => setMultiCollectionDate(e.target.value)}
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Payment Method</label>
+                  <select
+                    value={multiPaymentMethod}
+                    onChange={(e) => setMultiPaymentMethod(e.target.value as any)}
+                    className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-xs"
+                  >
+                    <option value="CASH">Cash Payment</option>
+                    <option value="MOBILE_BANKING">Mobile Banking</option>
+                    <option value="CHEQUE">Bank Cheque</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Customer / Outlet *</label>
+                <select
+                  required
+                  value={multiCustomerId}
+                  onChange={(e) => {
+                    const cId = e.target.value;
+                    setMultiCustomerId(cId);
+                    setMultiAmounts({});
+                  }}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold"
+                >
+                  <option value="">Select Customer Outlet</option>
+                  {customers.map(c => (
+                    <option key={c.id} value={c.id}>{c.shopName} (Total Due: ৳{c.totalDue})</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Company wise Previous Due and Input List */}
+              {multiCustomerId && (
+                <div className="space-y-2.5">
+                  <span className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Manufacturer / Brand breakdown</span>
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 max-h-60 overflow-y-auto space-y-3">
+                    {companies.map(comp => {
+                      const cust = customers.find(c => c.id === multiCustomerId);
+                      const prevDue = cust?.dues?.[comp.id] || 0;
+                      const val = multiAmounts[comp.id] || '';
+
+                      return (
+                        <div key={comp.id} className="flex items-center justify-between gap-4 py-1.5 border-b border-dashed border-slate-200 text-xs">
+                          <div className="w-1/3 min-w-0">
+                            <p className="font-extrabold text-slate-800 truncate">{comp.name}</p>
+                            <p className="text-[10px] text-gray-400 font-mono">Code: {comp.code}</p>
+                          </div>
+                          <div className="w-1/3 text-gray-500 font-bold">
+                            Previous Due: ৳{prevDue.toLocaleString()}
+                          </div>
+                          <div className="w-1/3 text-right">
+                            <input
+                              type="number"
+                              step="any"
+                              placeholder="Receive"
+                              value={val}
+                              onChange={(e) => {
+                                const num = parseFloat(e.target.value) || 0;
+                                setMultiAmounts(prev => ({ ...prev, [comp.id]: num }));
+                              }}
+                              className="w-28 p-2 bg-white border border-slate-200 rounded-xl text-center font-black text-xs text-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Summary display */}
+                  <div className="p-4 bg-slate-900 text-slate-100 rounded-2xl border border-slate-800 space-y-1.5 text-xs font-mono">
+                    <div className="flex justify-between items-center text-gray-400">
+                      <span>Total Due:</span>
+                      <span>৳{(() => {
+                        const cust = customers.find(c => c.id === multiCustomerId);
+                        return (cust?.totalDue || 0).toLocaleString();
+                      })()}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-emerald-400 font-bold text-sm border-t border-slate-800 pt-1.5">
+                      <span>Receiving:</span>
+                      <span>৳{Object.values(multiAmounts).reduce((sum, v) => sum + (v || 0), 0).toLocaleString()}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Reference No / Receipt Memo</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Multi-Brand payment reference"
+                  value={multiReferenceNo}
+                  onChange={(e) => setMultiReferenceNo(e.target.value)}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs"
+                />
+              </div>
+
+              <div className="pt-4 border-t border-slate-100 flex items-center justify-end space-x-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMultiCollectModalOpen(false);
+                    setMultiCustomerId('');
+                    setMultiAmounts({});
+                    setMultiReferenceNo('');
+                  }}
+                  className="bg-slate-100 text-gray-600 px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!multiCustomerId || Object.values(multiAmounts).reduce((sum, v) => sum + (v || 0), 0) === 0}
+                  className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-gray-400 disabled:cursor-not-allowed text-white px-5 py-2.5 rounded-xl text-xs font-black flex items-center space-x-1 cursor-pointer transition-all"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>File Multi Payment</span>
                 </button>
               </div>
             </form>

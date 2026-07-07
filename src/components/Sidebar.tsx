@@ -43,21 +43,15 @@ export default function Sidebar({ user, activeTab, setActiveTab, onLogout }: Sid
   const getNavItems = () => {
     const items = [
       { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['ALL'] },
-      { id: 'customers', label: 'Customers', icon: Users, roles: ['Super Admin', 'Manager', 'Sales Manager', 'DSR', 'Collection Officer'] },
-      { id: 'suppliers', label: 'Suppliers & Brands', icon: Truck, roles: ['Super Admin', 'Manager'] },
-      { id: 'inventory', label: 'Inventory & Products', icon: Warehouse, roles: ['Super Admin', 'Manager', 'Sales Manager'] },
-      { id: 'sales', label: 'Sales Invoices', icon: FileSpreadsheet, roles: ['Super Admin', 'Manager', 'Sales Manager', 'DSR'] },
-      { id: 'dsr', label: 'DSR Panel', icon: ClipboardList, roles: ['Super Admin', 'Manager', 'Sales Manager', 'DSR'] },
+      { id: 'inventory', label: 'Inventory', icon: Warehouse, roles: ['Super Admin', 'Manager', 'Sales Manager'] },
+      { id: 'sales', label: 'Sales', icon: FileSpreadsheet, roles: ['Super Admin', 'Manager', 'Sales Manager', 'DSR'] },
       { id: 'purchases', label: 'Purchases', icon: ShoppingBag, roles: ['Super Admin', 'Manager'] },
       { id: 'collections', label: 'Collections', icon: DollarSign, roles: ['Super Admin', 'Manager', 'Sales Manager', 'DSR', 'Collection Officer', 'Accountant'] },
+      { id: 'dsr', label: 'DSR Panel', icon: ClipboardList, roles: ['Super Admin', 'Manager', 'Sales Manager', 'DSR'] },
       { id: 'ledgers', label: 'Party Ledgers', icon: Receipt, roles: ['Super Admin', 'Manager', 'Sales Manager', 'DSR', 'Collection Officer', 'Accountant'] },
-      { id: 'expenses', label: 'Expenses', icon: FileText, roles: ['Super Admin', 'Manager', 'Accountant'] },
       { id: 'claims', label: 'Supplier Claims', icon: Gift, roles: ['Super Admin', 'Manager'] },
-      { id: 'settlements', label: 'Daily Settlements', icon: Coins, roles: ['Super Admin', 'Manager'] },
-      { id: 'subdepots', label: 'Sub-Depots', icon: Map, roles: ['Super Admin', 'Manager'] },
       { id: 'reports', label: 'Reports', icon: TrendingUp, roles: ['Super Admin', 'Manager', 'Sales Manager', 'Accountant'] },
       { id: 'settings', label: 'Settings', icon: SettingsIcon, roles: ['Super Admin', 'Manager'] },
-      { id: 'logs', label: 'Activity Log', icon: ClipboardList, roles: ['Super Admin'] },
     ];
 
     if (user.role === UserRole.SUPER_ADMIN) {

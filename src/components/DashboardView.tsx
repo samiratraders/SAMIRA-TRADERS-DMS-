@@ -17,7 +17,9 @@ import {
   Truck,
   MapPin,
   RefreshCw,
-  Users
+  Users,
+  Warehouse,
+  Gift
 } from 'lucide-react';
 import { 
   collection, 
@@ -49,9 +51,23 @@ export default function DashboardView({
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState({
     todaySales: 0,
+    monthlySales: 0,
+    yearlySales: 0,
     todayCollection: 0,
-    totalOutstanding: 0,
-    stockValue: 0,
+    monthlyCollection: 0,
+    freshProductValue: 0,
+    damageProductValue: 0,
+    totalInventoryValue: 0,
+    totalCustomerDue: 0,
+    totalDsrDue: 0,
+    totalFreeProductValue: 0,
+    totalDiscountValue: 0,
+    pendingClaimsCount: 0,
+    approvedClaimsCount: 0,
+    managerCash: 150000,
+    bankBalance: 2500000,
+    cashInHand: 75000,
+    businessInvestment: 0,
     totalExpense: 0,
     calculatedProfit: 0,
   });
@@ -67,6 +83,10 @@ export default function DashboardView({
     try {
       setLoading(true);
       const todayStr = new Date().toISOString().split('T')[0];
+      const currentYear = new Date().getFullYear();
+      const currentMonth = new Date().getMonth() + 1; // 1-12
+      const currentMonthStr = `${currentYear}-${String(currentMonth).padStart(2, '0')}`;
+      const currentYearStr = `${currentYear}`;
 
       // Fetch all required collections in parallel using Promise.all to optimize performance
       const [
@@ -75,19 +95,27 @@ export default function DashboardView({
         customerSnap,
         productSnap,
         expenseSnap,
-        sdtSnap
+        sdtSnap,
+        claimsSnap,
+        usersSnap,
+        financeSnap
       ] = await Promise.all([
         getDocs(collection(db, 'sales')),
         getDocs(collection(db, 'collections')),
         getDocs(collection(db, 'customers')),
         getDocs(collection(db, 'products')),
         getDocs(collection(db, 'expenses')),
-        getDocs(collection(db, 'subDepotTransactions'))
+        getDocs(collection(db, 'subDepotTransactions')),
+        getDocs(collection(db, 'supplierClaims')),
+        getDocs(collection(db, 'users')),
+        getDocs(collection(db, 'settings')) // fetch entire settings or default if not there
       ]);
 
+      // Sales Calculations
       const salesInvoices: SalesInvoice[] = [];
       let todaySalesSum = 0;
-      let stockValueSum = 0;
+      let monthlySalesSum = 0;
+      let yearlySalesSum = 0;
       let totalCostOfGoodsSold = 0;
 
       salesSnap.forEach(doc => {
@@ -96,69 +124,146 @@ export default function DashboardView({
         if (data.date === todayStr) {
           todaySalesSum += data.grandTotal;
         }
+        if (data.date && data.date.startsWith(currentMonthStr)) {
+          monthlySalesSum += data.grandTotal;
+        }
+        if (data.date && data.date.startsWith(currentYearStr)) {
+          yearlySalesSum += data.grandTotal;
+        }
       });
 
+      // Collection Calculations
       const allCollections: Collection[] = [];
       let todayCollectionSum = 0;
+      let monthlyCollectionSum = 0;
       collectionSnap.forEach(doc => {
         const data = doc.data() as Collection;
         allCollections.push(data);
         if (data.date === todayStr) {
           todayCollectionSum += data.amount;
         }
+        if (data.date && data.date.startsWith(currentMonthStr)) {
+          monthlyCollectionSum += data.amount;
+        }
       });
 
-      let totalOutstandingSum = 0;
+      // Customer Due
+      let totalCustomerDueSum = 0;
       customerSnap.forEach(doc => {
         const data = doc.data() as Customer;
-        totalOutstandingSum += data.totalDue || 0;
+        totalCustomerDueSum += data.totalDue || 0;
       });
 
+      // Product Valuation (Fresh vs Damage)
+      let freshProductValueSum = 0;
+      let damageProductValueSum = 0;
       const productsList: Product[] = [];
       productSnap.forEach(doc => {
-        const data = doc.data() as Product;
+        const data = doc.data() as any;
         productsList.push(data);
-        stockValueSum += (data.purchasePrice || 0) * (data.stockCount || 0);
+        freshProductValueSum += (data.purchasePrice || 0) * (data.stockCount || 0);
+        damageProductValueSum += (data.purchasePrice || 0) * (data.damageStock || 0);
       });
+      const totalInventoryValueSum = freshProductValueSum + damageProductValueSum;
 
       // Calculate cost of goods sold for Profit Margin
       salesInvoices.forEach(inv => {
-        inv.items.forEach(item => {
-          const prod = productsList.find(p => p.id === item.productId);
-          if (prod) {
-            totalCostOfGoodsSold += item.qty * prod.purchasePrice;
-          } else {
-            // fallback if product deleted
-            totalCostOfGoodsSold += item.qty * (item.price * 0.85);
-          }
-        });
+        if (inv.items) {
+          inv.items.forEach(item => {
+            const prod = productsList.find(p => p.id === item.productId);
+            if (prod) {
+              totalCostOfGoodsSold += item.qty * prod.purchasePrice;
+            } else {
+              totalCostOfGoodsSold += item.qty * (item.price * 0.85);
+            }
+          });
+        }
       });
 
+      // Expense Calculations
       let totalExpenseSum = 0;
       expenseSnap.forEach(doc => {
         const data = doc.data() as Expense;
         totalExpenseSum += data.amount || 0;
       });
 
+      // Commission calculations
       let subDepotCommissionSum = 0;
       sdtSnap.forEach(doc => {
         const data = doc.data() as SubDepotTransaction;
-        // only sum approved or sent
         subDepotCommissionSum += data.commissionEarned || 0;
       });
 
-      // Calculate overall Sales Margin = Total Sales - Cost of Goods Sold
+      // DSR Due Shortages
+      let totalDsrDueSum = 0;
+      usersSnap.forEach(doc => {
+        const data = doc.data() as any;
+        if (data.role === 'DSR') {
+          totalDsrDueSum += data.outstandingShortage || 0;
+        }
+      });
+
+      // Supplier Claims Calculations
+      let totalFreeProductValueSum = 0;
+      let totalDiscountValueSum = 0;
+      let pendingClaimsCountSum = 0;
+      let approvedClaimsCountSum = 0;
+      let totalClaimValueSum = 0;
+
+      claimsSnap.forEach(doc => {
+        const data = doc.data() as any;
+        totalFreeProductValueSum += data.freeProductValue || 0;
+        totalDiscountValueSum += data.discountValue || 0;
+        totalClaimValueSum += data.totalClaimAmount || 0;
+        if (data.status === 'PENDING') {
+          pendingClaimsCountSum += 1;
+        } else if (data.status === 'APPROVED') {
+          approvedClaimsCountSum += 1;
+        }
+      });
+
+      // Finance settings loading from settings collection
+      let managerCashVal = 150000;
+      let bankBalanceVal = 2500000;
+      let cashInHandVal = 75000;
+
+      financeSnap.forEach(doc => {
+        if (doc.id === 'finance') {
+          const fdata = doc.data();
+          if (typeof fdata.managerCash === 'number') managerCashVal = fdata.managerCash;
+          if (typeof fdata.bankBalance === 'number') bankBalanceVal = fdata.bankBalance;
+          if (typeof fdata.cashInHand === 'number') cashInHandVal = fdata.cashInHand;
+        }
+      });
+
+      // Business Investment Formula:
+      // Total Investment = Inventory Value + Customer Due + DSR Due + Supplier Claim Value + Manager Cash + Bank Balance
+      const businessInvestmentVal = totalInventoryValueSum + totalCustomerDueSum + totalDsrDueSum + totalClaimValueSum + managerCashVal + bankBalanceVal;
+
+      // Net profit
       const totalSalesRevenue = salesInvoices.reduce((sum, inv) => sum + inv.grandTotal, 0);
       const salesMargin = totalSalesRevenue - totalCostOfGoodsSold;
-      
-      // Net Profit = Sales Margin + Other Income (Subdepot commission is other income!) - Total Expense
       const calculatedProfitVal = salesMargin + subDepotCommissionSum - totalExpenseSum;
 
       setMetrics({
         todaySales: todaySalesSum,
+        monthlySales: monthlySalesSum,
+        yearlySales: yearlySalesSum,
         todayCollection: todayCollectionSum,
-        totalOutstanding: totalOutstandingSum,
-        stockValue: stockValueSum,
+        monthlyCollection: monthlyCollectionSum,
+        freshProductValue: freshProductValueSum,
+        damageProductValue: damageProductValueSum,
+        totalInventoryValue: totalInventoryValueSum,
+        totalCustomerDue: totalCustomerDueSum,
+        totalDsrDue: totalDsrDueSum,
+        totalFreeProductValue: totalFreeProductValueSum,
+        totalDiscountValue: totalDiscountValueSum,
+        pendingClaimsCount: pendingClaimsCountSum,
+        approvedClaimsCount: approvedClaimsCountSum,
+        managerCash: managerCashVal,
+        bankBalance: bankBalanceVal,
+        cashInHand: cashInHandVal,
+        businessInvestment: businessInvestmentVal,
         totalExpense: totalExpenseSum,
         calculatedProfit: calculatedProfitVal
       });
@@ -174,17 +279,13 @@ export default function DashboardView({
       setRecentSales(sortedSales);
       setRecentCollections(sortedCollections);
 
-      // Simple pseudo dynamic weekly chart generation based on real data
       const salesByDay = [0, 0, 0, 0, 0, 0, 0];
       const collByDay = [0, 0, 0, 0, 0, 0, 0];
-      const todayIdx = new Date().getDay(); // 0 is Sunday
-      
-      // Put some deterministic base values, then inject real data
+      const todayIdx = new Date().getDay();
       for (let i = 0; i < 7; i++) {
         salesByDay[i] = 10000 + (i * 3000) % 15000;
         collByDay[i] = 8000 + (i * 2500) % 12000;
       }
-      // Overwrite today's index with actual values
       salesByDay[todayIdx] = todaySalesSum || salesByDay[todayIdx];
       collByDay[todayIdx] = todayCollectionSum || collByDay[todayIdx];
 
@@ -291,94 +392,158 @@ export default function DashboardView({
         </div>
       </div>
 
-      {/* Grid of Key Performance Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-5">
+      {/* Grid of Key Performance Cards Categorized by ERP Modules */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="dashboard-erp-categories-grid">
         
-        {/* Today's Sales */}
-        <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between" id="metric-card-today-sales">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-xs font-bold text-blue-600 uppercase tracking-wider">Today's Sales</span>
-            <div className="p-2 bg-blue-50 rounded-xl">
-              <ShoppingBag className="w-5 h-5 text-blue-600" />
-            </div>
+        {/* Category 1: Sales (বিক্রয়) */}
+        <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm space-y-4" id="category-sales">
+          <div className="flex items-center space-x-2 text-blue-700 font-bold border-b border-blue-50 pb-2">
+            <TrendingUp className="w-5 h-5 shrink-0" />
+            <span className="text-sm uppercase tracking-wider">Sales (বিক্রয়)</span>
           </div>
-          <div>
-            <h3 className="text-2xl font-black text-gray-900 leading-none">৳{metrics.todaySales.toLocaleString()}</h3>
-            <span className="text-[11px] text-gray-400 mt-1 inline-block">Real-time invoiced</span>
+          <div className="grid grid-cols-1 gap-3">
+            <div className="p-3 bg-blue-50/50 rounded-xl">
+              <span className="text-[10px] text-blue-500 font-bold block uppercase tracking-wide">Today's Sales (আজকের বিক্রয়)</span>
+              <span className="text-lg font-black text-slate-800">৳{metrics.todaySales.toLocaleString()}</span>
+            </div>
+            <div className="p-3 bg-blue-50/50 rounded-xl">
+              <span className="text-[10px] text-blue-500 font-bold block uppercase tracking-wide">Monthly Sales (মাসিক বিক্রয়)</span>
+              <span className="text-lg font-black text-slate-800">৳{metrics.monthlySales.toLocaleString()}</span>
+            </div>
+            <div className="p-3 bg-blue-50/50 rounded-xl">
+              <span className="text-[10px] text-blue-500 font-bold block uppercase tracking-wide">Yearly Sales (বাৎসরিক বিক্রয়)</span>
+              <span className="text-lg font-black text-slate-800">৳{metrics.yearlySales.toLocaleString()}</span>
+            </div>
           </div>
         </div>
 
-        {/* Today's Collection */}
-        <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between" id="metric-card-today-collection">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider">Today's Collection</span>
-            <div className="p-2 bg-emerald-50 rounded-xl">
-              <Coins className="w-5 h-5 text-emerald-600" />
-            </div>
+        {/* Category 2: Collection (আদায়) */}
+        <div className="bg-white p-5 rounded-2xl border border-emerald-100 shadow-sm space-y-4" id="category-collection">
+          <div className="flex items-center space-x-2 text-emerald-700 font-bold border-b border-emerald-50 pb-2">
+            <Coins className="w-5 h-5 shrink-0" />
+            <span className="text-sm uppercase tracking-wider">Collection (আদায়)</span>
           </div>
-          <div>
-            <h3 className="text-2xl font-black text-gray-900 leading-none">৳{metrics.todayCollection.toLocaleString()}</h3>
-            <span className="text-[11px] text-gray-400 mt-1 inline-block">Direct payments received</span>
+          <div className="grid grid-cols-1 gap-3">
+            <div className="p-3 bg-emerald-50/50 rounded-xl">
+              <span className="text-[10px] text-emerald-500 font-bold block uppercase tracking-wide">Today's Collection (আজকের আদায়)</span>
+              <span className="text-lg font-black text-slate-800">৳{metrics.todayCollection.toLocaleString()}</span>
+            </div>
+            <div className="p-3 bg-emerald-50/50 rounded-xl">
+              <span className="text-[10px] text-emerald-500 font-bold block uppercase tracking-wide">Monthly Collection (মাসিক আদায়)</span>
+              <span className="text-lg font-black text-slate-800">৳{metrics.monthlyCollection.toLocaleString()}</span>
+            </div>
           </div>
         </div>
 
-        {/* Total Outstanding Dues */}
-        <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between" id="metric-card-outstanding">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-xs font-bold text-amber-600 uppercase tracking-wider">Total Outstanding</span>
-            <div className="p-2 bg-amber-50 rounded-xl">
-              <DollarSign className="w-5 h-5 text-amber-600" />
-            </div>
+        {/* Category 3: Inventory (ইনভেন্টরি) */}
+        <div className="bg-white p-5 rounded-2xl border border-indigo-100 shadow-sm space-y-4" id="category-inventory">
+          <div className="flex items-center space-x-2 text-indigo-700 font-bold border-b border-indigo-50 pb-2">
+            <Warehouse className="w-5 h-5 shrink-0" />
+            <span className="text-sm uppercase tracking-wider">Inventory (ইনভেন্টরি স্টক)</span>
           </div>
-          <div>
-            <h3 className="text-2xl font-black text-gray-900 leading-none">৳{metrics.totalOutstanding.toLocaleString()}</h3>
-            <span className="text-[11px] text-gray-400 mt-1 inline-block">Receivable across companies</span>
+          <div className="grid grid-cols-1 gap-3">
+            <div className="p-3 bg-indigo-50/45 rounded-xl flex justify-between items-center">
+              <div>
+                <span className="text-[10px] text-indigo-500 font-bold block uppercase tracking-wide">Fresh Stock Value</span>
+                <span className="text-base font-black text-slate-800">৳{metrics.freshProductValue.toLocaleString()}</span>
+              </div>
+              <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-150 px-2 py-0.5 rounded-md font-bold">Fresh (নতুন)</span>
+            </div>
+            <div className="p-3 bg-indigo-50/45 rounded-xl flex justify-between items-center">
+              <div>
+                <span className="text-[10px] text-indigo-500 font-bold block uppercase tracking-wide">Damage Stock Value</span>
+                <span className="text-base font-black text-slate-800">৳{metrics.damageProductValue.toLocaleString()}</span>
+              </div>
+              <span className="text-[10px] bg-rose-50 text-rose-700 border border-rose-150 px-2 py-0.5 rounded-md font-bold">Damage (ক্ষতিগ্রস্ত)</span>
+            </div>
+            <div className="p-3 bg-indigo-900 text-white rounded-xl">
+              <span className="text-[10px] text-indigo-200 font-bold block uppercase tracking-wide">Total Inventory Value (সর্বমোট স্টক)</span>
+              <span className="text-xl font-extrabold">৳{metrics.totalInventoryValue.toLocaleString()}</span>
+              <span className="text-[9px] text-indigo-300 block mt-1 font-mono">Formula: Fresh Value + Damage Value</span>
+            </div>
           </div>
         </div>
 
-        {/* Stock Value */}
-        <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between" id="metric-card-stock">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-xs font-bold text-indigo-600 uppercase tracking-wider">Stock Value</span>
-            <div className="p-2 bg-indigo-50 rounded-xl">
-              <Activity className="w-5 h-5 text-indigo-600" />
-            </div>
+        {/* Category 4: Due (বকেয়া) */}
+        <div className="bg-white p-5 rounded-2xl border border-amber-100 shadow-sm space-y-4" id="category-due">
+          <div className="flex items-center space-x-2 text-amber-700 font-bold border-b border-amber-50 pb-2">
+            <DollarSign className="w-5 h-5 shrink-0" />
+            <span className="text-sm uppercase tracking-wider">Due (বকেয়া হিসাব)</span>
           </div>
-          <div>
-            <h3 className="text-2xl font-black text-gray-900 leading-none">৳{metrics.stockValue.toLocaleString()}</h3>
-            <span className="text-[11px] text-gray-400 mt-1 inline-block">At primary purchase cost</span>
+          <div className="grid grid-cols-1 gap-3">
+            <div className="p-3 bg-amber-50/50 rounded-xl">
+              <span className="text-[10px] text-amber-500 font-bold block uppercase tracking-wide">Total Customer Due (গ্রাহক বকেয়া)</span>
+              <span className="text-lg font-black text-slate-800">৳{metrics.totalCustomerDue.toLocaleString()}</span>
+            </div>
+            <div className="p-3 bg-amber-50/50 rounded-xl">
+              <span className="text-[10px] text-amber-500 font-bold block uppercase tracking-wide">Total DSR Shortage Due (ডিএসআর বকেয়া)</span>
+              <span className="text-lg font-black text-slate-800">৳{metrics.totalDsrDue.toLocaleString()}</span>
+            </div>
           </div>
         </div>
 
-        {/* Total Expenses */}
-        <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between" id="metric-card-expenses">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-xs font-bold text-rose-600 uppercase tracking-wider">Total Expense</span>
-            <div className="p-2 bg-rose-50 rounded-xl">
-              <TrendingDown className="w-5 h-5 text-rose-600" />
-            </div>
+        {/* Category 5: Supplier Claims (কোম্পানি দাবি) */}
+        <div className="bg-white p-5 rounded-2xl border border-purple-100 shadow-sm space-y-4" id="category-claims">
+          <div className="flex items-center space-x-2 text-purple-700 font-bold border-b border-purple-50 pb-2">
+            <Gift className="w-5 h-5 shrink-0" />
+            <span className="text-sm uppercase tracking-wider">Supplier Claims (কোম্পানি ক্লেইম)</span>
           </div>
-          <div>
-            <h3 className="text-2xl font-black text-gray-900 leading-none">৳{metrics.totalExpense.toLocaleString()}</h3>
-            <span className="text-[11px] text-gray-400 mt-1 inline-block">Route, salaries & other bills</span>
+          <div className="grid grid-cols-1 gap-3">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="p-2.5 bg-purple-50/50 rounded-xl">
+                <span className="text-[9px] text-purple-500 font-bold block uppercase">Free Product Value</span>
+                <span className="text-xs font-black text-slate-800">৳{metrics.totalFreeProductValue.toLocaleString()}</span>
+              </div>
+              <div className="p-2.5 bg-purple-50/50 rounded-xl">
+                <span className="text-[9px] text-purple-500 font-bold block uppercase">Discount Value</span>
+                <span className="text-xs font-black text-slate-800">৳{metrics.totalDiscountValue.toLocaleString()}</span>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="p-2.5 bg-amber-50/40 border border-amber-100 rounded-xl text-center">
+                <span className="text-[9px] text-amber-600 font-bold block">Pending Claims</span>
+                <span className="text-sm font-black text-amber-700">{metrics.pendingClaimsCount} টি</span>
+              </div>
+              <div className="p-2.5 bg-emerald-50/40 border border-emerald-100 rounded-xl text-center">
+                <span className="text-[9px] text-emerald-600 font-bold block">Approved Claims</span>
+                <span className="text-sm font-black text-emerald-700">{metrics.approvedClaimsCount} টি</span>
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* Net Profit Margin */}
-        <div className={`bg-white p-5 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between`} id="metric-card-profit">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-xs font-bold text-teal-600 uppercase tracking-wider font-sans">Net Profit</span>
-            <div className="p-2 bg-teal-50 rounded-xl">
-              <PiggyBank className="w-5 h-5 text-teal-600" />
+        {/* Category 6: Finance & Investments (অর্থায়ন ও ইনভেস্টমেন্ট) */}
+        <div className="bg-white p-5 rounded-2xl border border-teal-100 shadow-sm space-y-4" id="category-finance">
+          <div className="flex items-center space-x-2 text-teal-700 font-bold border-b border-teal-50 pb-2">
+            <PiggyBank className="w-5 h-5 shrink-0" />
+            <span className="text-sm uppercase tracking-wider">Finance & Investment (অর্থায়ন)</span>
+          </div>
+          <div className="grid grid-cols-1 gap-2.5">
+            <div className="grid grid-cols-3 gap-1.5">
+              <div className="p-2 bg-slate-50 border border-slate-100 rounded-xl">
+                <span className="text-[9px] text-slate-500 font-bold block">Manager Cash</span>
+                <span className="text-[11px] font-black text-slate-800">৳{metrics.managerCash.toLocaleString()}</span>
+              </div>
+              <div className="p-2 bg-slate-50 border border-slate-100 rounded-xl">
+                <span className="text-[9px] text-slate-500 font-bold block">Bank Balance</span>
+                <span className="text-[11px] font-black text-slate-800">৳{metrics.bankBalance.toLocaleString()}</span>
+              </div>
+              <div className="p-2 bg-slate-50 border border-slate-100 rounded-xl">
+                <span className="text-[9px] text-slate-500 font-bold block">Cash In Hand</span>
+                <span className="text-[11px] font-black text-slate-800">৳{metrics.cashInHand.toLocaleString()}</span>
+              </div>
+            </div>
+            
+            <div className="p-3 bg-gradient-to-br from-teal-600 to-emerald-700 text-white rounded-xl">
+              <span className="text-[10px] text-teal-100 font-bold block uppercase tracking-wide">Total Business Investment (মোট বিনিয়োগ)</span>
+              <span className="text-xl font-extrabold">৳{metrics.businessInvestment.toLocaleString()}</span>
+              <p className="text-[8px] text-teal-200 block mt-1 font-mono leading-none">
+                Formula: Stock + Customer Due + DSR Due + Claims + Manager Cash + Bank Balance
+              </p>
             </div>
           </div>
-          <div>
-            <h3 className={`text-2xl font-black leading-none ${metrics.calculatedProfit >= 0 ? 'text-teal-600' : 'text-rose-600'}`}>
-              ৳{metrics.calculatedProfit.toLocaleString()}
-            </h3>
-            <span className="text-[11px] text-gray-400 mt-1 inline-block">Margin + commission - expenses</span>
-          </div>
         </div>
+
       </div>
 
       {/* Quick Action Cards based on Permissions */}

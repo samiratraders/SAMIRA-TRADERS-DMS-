@@ -51,7 +51,7 @@ export interface DSRSheet {
   dsrName: string;
   route: string;
   date: string;
-  status: 'assigned' | 'closed';
+  status: 'assigned' | 'closed' | 'submitted_by_dsr' | 'reviewed_by_manager' | 'approved_by_admin';
   createdAt: string;
   closedAt?: string;
   invoiceIds: string[];
