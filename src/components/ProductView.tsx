@@ -13,7 +13,14 @@ export default function ProductView() {
   const [products, setProducts] = useState<Product[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState(() => {
+    const globalSearch = sessionStorage.getItem('dms_global_search_term');
+    if (globalSearch) {
+      sessionStorage.removeItem('dms_global_search_term');
+      return globalSearch;
+    }
+    return '';
+  });
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
 
   // Bulk Import State

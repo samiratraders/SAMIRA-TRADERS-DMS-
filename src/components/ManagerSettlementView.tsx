@@ -11,6 +11,7 @@ import {
   ShoppingBag, 
   DollarSign, 
   TrendingUp, 
+  Calculator,
   TrendingDown, 
   RefreshCw,
   Award,
@@ -24,10 +25,11 @@ import {
   FileText,
   Clock
 } from 'lucide-react';
-import { collection, getDocs, doc, setDoc, updateDoc, writeBatch, query, where } from 'firebase/firestore';
+import { collection, getDocs, doc, setDoc, updateDoc, writeBatch, query, where, runTransaction } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { SalesInvoice, Collection, Expense, Product, Supplier, Purchase, DailySettlement, UserRole, UserProfile } from '../types';
 import { logActivity } from '../lib/activityLogger';
+import { ConnectionStatusBadge } from './ConnectionStatusBadge';
 
 // Local interface for DSR Sheets matching DSRView
 interface DSRSheetItem {
@@ -82,11 +84,14 @@ export default function ManagerSettlementView() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
   const [dailySettlements, setDailySettlements] = useState<DailySettlement[]>([]);
+  const [salesInvoices, setSalesInvoices] = useState<SalesInvoice[]>([]);
   
   // Configuration
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [adminTransferInput, setAdminTransferInput] = useState<number>(0);
   const [openingBalance, setOpeningBalance] = useState<number>(15000); // Dynamic Daily Opening
+  const [readySalesInput, setReadySalesInput] = useState<number>(0);
+  const [isAutoReadySales, setIsAutoReadySales] = useState<boolean>(true);
   
   // Interactive Drilldown States
   const [drilldownType, setDrilldownType] = useState<'dues' | 'collections' | 'free' | 'discounts' | 'expenses' | 'damages' | null>(null);
@@ -97,6 +102,32 @@ export default function ManagerSettlementView() {
   const [selectedStaffForAudit, setSelectedStaffForAudit] = useState<{ id: string; name: string } | null>(null);
   const [auditEntries, setAuditEntries] = useState<any[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
+
+  // Firestore Connection Diagnostic State
+  const [dbState, setDbState] = useState<{ status: 'idle' | 'checking' | 'connected' | 'error'; error?: string; latency?: number }>({ status: 'idle' });
+
+  const runDiagnostics = async (): Promise<boolean> => {
+    setDbState({ status: 'checking' });
+    const start = Date.now();
+    try {
+      console.log('Manager Desk: Executing Firestore diagnostic write test...');
+      const testDocRef = doc(db, 'connection_diagnostics', 'health_check_manager');
+      await setDoc(testDocRef, {
+        lastChecked: new Date().toISOString(),
+        status: 'success',
+        clientTime: start
+      });
+      const latency = Date.now() - start;
+      console.log(`Manager Desk: Firestore diagnostic test write successful. Latency: ${latency}ms`);
+      setDbState({ status: 'connected', latency });
+      return true;
+    } catch (err: any) {
+      console.error('Manager Desk: Firestore connection diagnostic failed:', err);
+      const errMsg = err?.message || String(err);
+      setDbState({ status: 'error', error: errMsg });
+      return false;
+    }
+  };
 
   const fetchStaffAuditTrail = async (staffId: string) => {
     try {
@@ -135,14 +166,15 @@ export default function ManagerSettlementView() {
         setCurrentUser(activeUserSession);
       }
 
-      const [sheetsSnap, colSnap, expSnap, prodSnap, supSnap, custSnap, settlementsSnap] = await Promise.all([
+      const [sheetsSnap, colSnap, expSnap, prodSnap, supSnap, custSnap, settlementsSnap, salesSnap] = await Promise.all([
         getDocs(collection(db, 'dsrSheets')),
         getDocs(collection(db, 'collections')),
         getDocs(collection(db, 'expenses')),
         getDocs(collection(db, 'products')),
         getDocs(collection(db, 'suppliers')),
         getDocs(collection(db, 'customers')),
-        getDocs(collection(db, 'dailySettlements'))
+        getDocs(collection(db, 'dailySettlements')),
+        getDocs(collection(db, 'sales'))
       ]);
 
       const sheetsList: DSRSheet[] = [];
@@ -173,6 +205,10 @@ export default function ManagerSettlementView() {
       settlementsSnap.forEach(d => settlementsList.push(d.data() as DailySettlement));
       setDailySettlements(settlementsList);
 
+      const salesList: SalesInvoice[] = [];
+      salesSnap.forEach(d => salesList.push(d.data() as SalesInvoice));
+      setSalesInvoices(salesList);
+
     } catch (err) {
       console.error('Error loading settlement databases:', err);
     } finally {
@@ -182,6 +218,7 @@ export default function ManagerSettlementView() {
 
   useEffect(() => {
     loadData();
+    runDiagnostics();
   }, []);
 
   // Filter relevant today's sheets and calculations
@@ -309,15 +346,45 @@ export default function ManagerSettlementView() {
 
   const comparisons = getComparisonData();
 
-  // --- MANAGER'S BALANCE AND SHORT CALCULATIONS ---
-  // Formula: Net Sales + Dues Collections - New Dues - Free - Discounts - Expenses - Damages
+  // --- AUTOMATED DEDUCTION & READY SALES CALCULATORS ---
+  // Automated calculation of ready sales from non-DSR invoices today
+  const calculatedReadySalesValue = salesInvoices
+    .filter(inv => inv.date === selectedDate && !todaySheets.some(s => s.invoiceIds?.includes(inv.id)))
+    .reduce((sum, inv) => sum + inv.grandTotal, 0);
+
+  useEffect(() => {
+    if (isAutoReadySales) {
+      setReadySalesInput(calculatedReadySalesValue);
+    }
+  }, [calculatedReadySalesValue, isAutoReadySales, selectedDate]);
+
+  const currentReadySales = activeSettlement && ('readySales' in activeSettlement)
+    ? ((activeSettlement as any).readySales || 0)
+    : readySalesInput;
+
+  // --- MANAGER'S BALANCE AND SHORT CALCULATIONS (PHYSICAL CASH FLOW INTEGRITY) ---
+  // 1. Sum of actual cash received from DSRs at afternoon checkout
+  const totalDsrCashReceived = todaySheets.reduce((sum, s) => sum + (s.reconciliation?.cashReceived || 0), 0);
+
+  // 2. Sum of actual DSR shortages recorded today
+  const totalDsrShortages = todaySheets.reduce((sum, s) => sum + (s.reconciliation?.shortage || 0), 0);
+
+  // 3. Manager's Actual Cash on Hand (Manager Balance)
+  // Formula: Actual Cash Received from DSRs + Today's Dues Collections - Direct Office Expenses
   const calculatedManagerBalance = Math.max(0, 
-    todaySalesValue + todayOldCollections - todayNewCustomerDues - todayFreeValue - todayDiscountValue - totalExpenses - todayDamageValue
+    totalDsrCashReceived + todayOldCollections - todayDirectExpenses
   );
+
+  // 4. Daily DSR Net Cash Collection (for display / audit reference)
+  const dsrNetCashCollection = totalAssignedValue + todayOldCollections - todayNewCustomerDues - todayFreeValue - todayDiscountValue;
+
+  // 5. Final Ready-to-Deposit Amount (Actual Physical Cash Available for Admin Transfer)
+  // Formula: Manager's Actual Cash on Hand + Ready Sales (non-DSR cash sales)
+  const readyToDeposit = Math.max(0, calculatedManagerBalance + currentReadySales);
 
   // Short calculation
   const currentAdminTransfer = activeSettlement ? activeSettlement.adminTransfer : adminTransferInput;
-  const currentShortage = Math.max(0, calculatedManagerBalance - currentAdminTransfer);
+  const currentShortage = Math.max(0, (activeSettlement && 'readyToDeposit' in activeSettlement ? ((activeSettlement as any).readyToDeposit || 0) : readyToDeposit) - currentAdminTransfer);
 
   // --- INTERACTIVE DRILLDOWNS CONTEXT DATA ---
   const getDrilldownContent = () => {
@@ -427,49 +494,67 @@ export default function ManagerSettlementView() {
 
     try {
       setLoading(true);
-      const batch = writeBatch(db);
+
+      // RUN PRE-FLIGHT FIREBASE CONNECTION DIAGNOSTIC (Non-blocking warning only)
+      console.log('Manager Desk: Running pre-flight Firestore connection diagnostics before submitting settlement...');
+      const isConnected = await runDiagnostics();
+      if (!isConnected) {
+        console.warn('Firestore connection check returned false. We will still proceed with submitting the settlement as connection_diagnostics write might be blocked or delayed.');
+      }
 
       const settlementId = `settlement-${selectedDate}`;
-      const newSettlement: DailySettlement = {
-        id: settlementId,
-        date: selectedDate,
-        status: 'submitted',
-        openingBalance,
-        todaySalesValue,
-        todayCollection: todayOldCollections,
-        totalCustomerDue: todayNewCustomerDues,
-        totalFreeValue: todayFreeValue,
-        totalDiscountValue: todayDiscountValue,
-        totalExpenses,
-        totalDamageValue: todayDamageValue,
-        managerBalance: calculatedManagerBalance,
-        adminTransfer: adminTransferInput,
-        shortage: currentShortage,
-        submittedBy: currentUser?.id || 'manager_id',
-        submittedByName: currentUser?.name || 'Manager Office',
-        submittedAt: new Date().toISOString(),
-        sheetIds: todaySheets.map(s => s.id),
-        supplierDetails: supplierBreakdowns
-      };
 
-      // 1. Create Settlement document
-      batch.set(doc(db, 'dailySettlements', settlementId), newSettlement);
+      await runTransaction(db, async (transaction) => {
+        // Read existing DailySettlement document if any
+        const settlementRef = doc(db, 'dailySettlements', settlementId);
+        await transaction.get(settlementRef);
 
-      // 2. Mark DSR sheets as reviewed_by_manager
-      todaySheets.forEach(sheet => {
-        if (sheet.status === 'submitted_by_dsr') {
-          batch.update(doc(db, 'dsrSheets', sheet.id), {
-            status: 'reviewed_by_manager'
-          });
-        }
+        // Read all sheets to ensure they are current
+        await Promise.all(todaySheets.map(sheet => transaction.get(doc(db, 'dsrSheets', sheet.id))));
+
+        const newSettlement: any = {
+          id: settlementId,
+          date: selectedDate,
+          status: 'submitted',
+          openingBalance,
+          todaySalesValue,
+          todayCollection: todayOldCollections,
+          totalCustomerDue: todayNewCustomerDues,
+          totalFreeValue: todayFreeValue,
+          totalDiscountValue: todayDiscountValue,
+          totalExpenses,
+          totalDamageValue: todayDamageValue,
+          managerBalance: calculatedManagerBalance,
+          adminTransfer: adminTransferInput,
+          shortage: currentShortage,
+          submittedBy: currentUser?.id || 'manager_id',
+          submittedByName: currentUser?.name || 'Manager Office',
+          submittedAt: new Date().toISOString(),
+          sheetIds: todaySheets.map(s => s.id),
+          supplierDetails: supplierBreakdowns,
+          readySales: currentReadySales,
+          readyToDeposit: readyToDeposit
+        };
+
+        // Perform atomic set and updates
+        transaction.set(settlementRef, newSettlement);
+
+        todaySheets.forEach(sheet => {
+          if (sheet.status === 'submitted_by_dsr') {
+            transaction.update(doc(db, 'dsrSheets', sheet.id), {
+              status: 'reviewed_by_manager'
+            });
+          }
+        });
       });
 
-      await batch.commit();
       alert('আজকের ডেইলি সেটেলমেন্ট এডমিন প্যানেলে যাচাই ও বুকিংয়ের জন্য পাঠানো হয়েছে!');
       loadData();
-    } catch (err) {
-      console.error('Error submitting daily settlement:', err);
-      alert('সেটেলমেন্ট সাবমিট করতে সমস্যা হয়েছে।');
+    } catch (err: any) {
+      console.error('Error submitting daily settlement transaction:', err);
+      const errorCode = err?.code || 'unknown-error';
+      const errorMessage = err?.message || String(err);
+      alert(`সেটেলমেন্ট সাবমিট করতে সমস্যা হয়েছে।\n(Error code: ${errorCode})\n\nত্রুটির বিবরণ: ${errorMessage}`);
     } finally {
       setLoading(false);
     }
@@ -483,159 +568,316 @@ export default function ManagerSettlementView() {
     try {
       setLoading(true);
       setShowApproveModal(false);
-      const usersSnap = await getDocs(collection(db, 'users'));
-      const batch = writeBatch(db);
 
-      // 1. Approve Settlement document
-      batch.update(doc(db, 'dailySettlements', targetSettlement.id), {
-        status: 'approved',
-        approvedBy: currentUser?.id || 'admin_id',
-        approvedByName: currentUser?.name || 'Super Admin',
-        approvedAt: new Date().toISOString()
-      });
+      // RUN PRE-FLIGHT FIREBASE CONNECTION DIAGNOSTIC (Non-blocking warning only)
+      console.log('Manager Desk: Running pre-flight Firestore connection diagnostics before approving settlement...');
+      const isConnected = await runDiagnostics();
+      if (!isConnected) {
+        console.warn('Firestore connection check returned false. We will still proceed with approving the settlement as connection_diagnostics write might be blocked or delayed.');
+      }
 
-      // 2. Loop through sheets associated with today
-      for (const sheet of todaySheets) {
-        if (sheet.status === 'reviewed_by_manager' || sheet.status === 'submitted_by_dsr') {
-          // A. Update sheet status
-          batch.update(doc(db, 'dsrSheets', sheet.id), {
-            status: 'approved_by_admin'
-          });
+      // Perform all operations in a single atomic runTransaction block
+      await runTransaction(db, async (transaction) => {
+        // --- 1. READ PHASE (All reads must occur first in transaction) ---
 
-          // B. Stock Deductions (Defer adjustment completed here)
-          if (sheet.items) {
-            sheet.items.forEach(it => {
-              const matchedProduct = products.find(p => p.id === it.productId);
-              if (matchedProduct) {
-                const currentStock = matchedProduct.stockCount;
-                const newStock = Math.max(0, currentStock - it.soldUnits);
-                batch.update(doc(db, 'products', it.productId), {
-                  stockCount: newStock
-                });
-              }
-            });
+        // A. Read Settlement Document
+        const settlementRef = doc(db, 'dailySettlements', targetSettlement.id);
+        const settlementSnap = await transaction.get(settlementRef);
+        if (!settlementSnap.exists()) {
+          throw new Error(`Daily Settlement document ${targetSettlement.id} does not exist.`);
+        }
+
+        // B. Read DSR Sheets Documents
+        const sheetRefs = todaySheets.map(s => doc(db, 'dsrSheets', s.id));
+        const sheetSnaps = await Promise.all(sheetRefs.map(ref => transaction.get(ref)));
+
+        // C. Read Manager User Document (submittedBy)
+        const managerUserRef = doc(db, 'users', targetSettlement.submittedBy);
+        const managerSnap = await transaction.get(managerUserRef);
+
+        // D. Read DSR User Documents (for staff outstanding shortage balances)
+        const dsrUserIds = new Set<string>();
+        todaySheets.forEach(sheet => {
+          if (sheet.status === 'reviewed_by_manager' || sheet.status === 'submitted_by_dsr') {
+            dsrUserIds.add(sheet.dsrId);
           }
+        });
+        const dsrUserSnaps = await Promise.all(
+          Array.from(dsrUserIds).map(dsrId => transaction.get(doc(db, 'users', dsrId)))
+        );
 
-          // C. Save DSR Expenses to general expenses collection
-          if (sheet.reconciliation?.expenses) {
-            sheet.reconciliation.expenses.forEach(e => {
-              if (e.amount > 0) {
-                const expId = `exp-dsr-${sheet.id}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-                batch.set(doc(db, 'expenses', expId), {
-                  id: expId,
-                  title: `DSR Expense - ${e.category} (${sheet.dsrName})`,
-                  category: 'ROUTE',
-                  amount: Number(e.amount),
-                  description: `Auto-logged from approved route "${sheet.route}" DSR checkout.`,
-                  date: sheet.date,
-                  routeName: sheet.route,
-                  staffId: sheet.dsrId,
-                  staffName: sheet.dsrName,
-                  createdAt: new Date().toISOString()
-                });
-              }
-            });
+        // E. Read Customers Documents (Fetch ALL customers who have invoices in today's DSR sheets to prevent double billing and correctly adjust dues)
+        const customerIds = new Set<string>();
+        todaySheets.forEach(sheet => {
+          if (sheet.status === 'reviewed_by_manager' || sheet.status === 'submitted_by_dsr') {
+            if (sheet.invoiceIds) {
+              sheet.invoiceIds.forEach(invId => {
+                const inv = salesInvoices.find(i => i.id === invId);
+                if (inv && inv.customerId) {
+                  customerIds.add(inv.customerId);
+                }
+              });
+            }
+            if (sheet.reconciliation?.customerDues) {
+              sheet.reconciliation.customerDues.forEach(c => {
+                if (c.customerId) {
+                  customerIds.add(c.customerId);
+                }
+              });
+            }
           }
+        });
+        const customerSnaps = await Promise.all(
+          Array.from(customerIds).map(id => transaction.get(doc(db, 'customers', id)))
+        );
 
-          // D. Customer outstanding dues adjustments & Customer ledger entries
-          if (sheet.reconciliation?.customerDues) {
-            sheet.reconciliation.customerDues.forEach(c => {
-              if (c.amount > 0) {
-                const cust = customers.find(custObj => custObj.id === c.customerId);
-                if (cust) {
-                  const currentDues = cust.dues || {};
-                  const prevDue = currentDues[c.companyId] || 0;
-                  const updatedCompanyDue = prevDue + c.amount;
+        // F. Read Products Documents for stock chaining / auditing integrity
+        const productIds = new Set<string>();
+        todaySheets.forEach(sheet => {
+          if (sheet.status === 'reviewed_by_manager' || sheet.status === 'submitted_by_dsr') {
+            if (sheet.items) {
+              sheet.items.forEach(it => {
+                productIds.add(it.productId);
+              });
+            }
+          }
+        });
+        const productSnaps = await Promise.all(
+          Array.from(productIds).map(id => transaction.get(doc(db, 'products', id)))
+        );
+
+
+        // --- 2. WRITE/UPDATE PHASE (All writes must occur after reads) ---
+
+        // A. Approve Settlement document
+        transaction.update(settlementRef, {
+          status: 'approved',
+          approvedBy: currentUser?.id || 'admin_id',
+          approvedByName: currentUser?.name || 'Super Admin',
+          approvedAt: new Date().toISOString()
+        });
+
+        // B. Loop through sheets associated with today
+        todaySheets.forEach(sheet => {
+          if (sheet.status === 'reviewed_by_manager' || sheet.status === 'submitted_by_dsr') {
+            // Update sheet status
+            const sheetRef = doc(db, 'dsrSheets', sheet.id);
+            transaction.update(sheetRef, {
+              status: 'approved_by_admin'
+            });
+
+            // Save DSR Expenses to general expenses collection
+            if (sheet.reconciliation?.expenses) {
+              sheet.reconciliation.expenses.forEach(e => {
+                if (e.amount > 0) {
+                  const expId = `exp-dsr-${sheet.id}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                  transaction.set(doc(db, 'expenses', expId), {
+                    id: expId,
+                    title: `DSR Expense - ${e.category} (${sheet.dsrName})`,
+                    category: 'ROUTE',
+                    amount: Number(e.amount),
+                    description: `Auto-logged from approved route "${sheet.route}" DSR checkout.`,
+                    date: sheet.date,
+                    routeName: sheet.route,
+                    staffId: sheet.dsrId,
+                    staffName: sheet.dsrName,
+                    createdAt: new Date().toISOString()
+                  });
+                }
+              });
+            }
+
+            // Reconcile and update customer outstanding dues, customer ledgers, and sales invoices
+            if (sheet.invoiceIds && sheet.invoiceIds.length > 0) {
+              // Group sheet invoices by customer and company
+              const sheetInvoices = salesInvoices.filter(inv => sheet.invoiceIds.includes(inv.id));
+              
+              // Find all unique customer and company combinations on this sheet
+              const customerCompanyPairs = new Map<string, { customerId: string; companyId: string; companyName: string }>();
+              sheetInvoices.forEach(inv => {
+                if (inv.customerId && inv.companyId) {
+                  const pairKey = `${inv.customerId}_${inv.companyId}`;
+                  customerCompanyPairs.set(pairKey, {
+                    customerId: inv.customerId,
+                    companyId: inv.companyId,
+                    companyName: inv.companyName || 'Samira Traders'
+                  });
+                }
+              });
+
+              customerCompanyPairs.forEach(pair => {
+                const { customerId, companyId, companyName } = pair;
+                
+                // 1. Calculate sum of originally recorded due amounts for this customer + company in this sheet
+                const customerCompanyInvoices = sheetInvoices.filter(inv => inv.customerId === customerId && inv.companyId === companyId);
+                const originalDueSum = customerCompanyInvoices.reduce((sum, inv) => {
+                  const originalDueAmt = Math.max(0, inv.grandTotal - (inv.paymentReceived || 0));
+                  return sum + originalDueAmt;
+                }, 0);
+
+                // 2. Find actual afternoon checkout due for this customer + company
+                const reconDueEntry = sheet.reconciliation?.customerDues?.find(c => c.customerId === customerId && c.companyId === companyId);
+                const actualDue = reconDueEntry ? Number(reconDueEntry.amount) || 0 : 0;
+
+                // 3. Compute Adjustment (originalDueSum - actualDue)
+                const adjustment = originalDueSum - actualDue;
+
+                // 4. Update the Customer's outstanding company-wise dues
+                const custSnap = customerSnaps.find(snap => snap.id === customerId);
+                if (custSnap && custSnap.exists()) {
+                  const custData = custSnap.data();
+                  const currentDues = custData.dues || {};
+                  const prevDue = Number(currentDues[companyId]) || 0;
+                  
+                  // The new due balance for this company is adjusted down by the adjustment
+                  const updatedCompanyDue = Math.max(0, prevDue - adjustment);
                   const updatedDues = {
                     ...currentDues,
-                    [c.companyId]: updatedCompanyDue
+                    [companyId]: updatedCompanyDue
                   };
                   const updatedTotalDue = Object.values(updatedDues).reduce((s: number, val: unknown) => s + (Number(val) || 0), 0);
 
-                  batch.update(doc(db, 'customers', c.customerId), {
+                  transaction.update(doc(db, 'customers', customerId), {
                     dues: updatedDues,
                     totalDue: updatedTotalDue
                   });
 
-                  // Log customer ledger entry
-                  const ledgerEntryId = `ledger-dsr-${sheet.id}-${c.customerId}`;
-                  batch.set(doc(db, 'ledgers', ledgerEntryId), {
-                    id: ledgerEntryId,
-                    customerId: c.customerId,
-                    companyId: c.companyId,
-                    companyName: 'Samira Traders',
-                    type: 'INVOICE',
-                    referenceId: sheet.id,
-                    referenceNo: `DSR-${sheet.id.slice(-5).toUpperCase()}`,
-                    date: sheet.date,
-                    amount: c.amount,
-                    balanceAfter: updatedCompanyDue,
-                    createdAt: new Date().toISOString()
-                  });
+                  // 5. Record Customer Ledger Entry for the checkout adjustment
+                  if (adjustment !== 0) {
+                    const ledgerEntryId = `ledger-dsr-adj-${sheet.id}-${customerId}-${companyId}`;
+                    transaction.set(doc(db, 'ledgers', ledgerEntryId), {
+                      id: ledgerEntryId,
+                      customerId,
+                      companyId,
+                      companyName,
+                      type: adjustment > 0 ? 'PAYMENT' : 'INVOICE',
+                      referenceId: sheet.id,
+                      referenceNo: `DSR-${sheet.id.slice(-5).toUpperCase()}`,
+                      date: sheet.date,
+                      amount: Math.abs(adjustment),
+                      balanceAfter: updatedCompanyDue,
+                      remarks: adjustment > 0 
+                        ? `DSR Route adjustment (Payment/Returns) for Route ${sheet.route}`
+                        : `DSR Route adjustment (Increased Dues) for Route ${sheet.route}`,
+                      createdAt: new Date().toISOString()
+                    });
+                  }
                 }
-              }
-            });
-          }
 
-          // E. Mark Associated Invoices as PAID
-          if (sheet.invoiceIds) {
-            sheet.invoiceIds.forEach(invId => {
-              batch.update(doc(db, 'sales', invId), {
-                status: 'PAID',
-                paymentReceived: sheet.reconciliation?.netSales || 0
+                // 6. Allocate adjustment and update individual sales invoices
+                let remainingAdjustment = adjustment;
+                customerCompanyInvoices.forEach(inv => {
+                  const originalDueAmt = Math.max(0, inv.grandTotal - (inv.paymentReceived || 0));
+                  
+                  let newPaymentReceived = inv.paymentReceived || 0;
+                  let newStatus = inv.status;
+
+                  if (remainingAdjustment > 0) {
+                    if (remainingAdjustment >= originalDueAmt) {
+                      newPaymentReceived = inv.grandTotal;
+                      newStatus = 'PAID';
+                      remainingAdjustment -= originalDueAmt;
+                    } else {
+                      newPaymentReceived += remainingAdjustment;
+                      newStatus = 'PARTIAL';
+                      remainingAdjustment = 0;
+                    }
+                  } else if (remainingAdjustment < 0) {
+                    // In the rare event of negative adjustment (dues increased beyond grandTotal), reduce paymentReceived
+                    const absAdj = Math.abs(remainingAdjustment);
+                    if (absAdj <= newPaymentReceived) {
+                      newPaymentReceived -= absAdj;
+                      newStatus = newPaymentReceived === 0 ? 'DUE' : 'PARTIAL';
+                      remainingAdjustment = 0;
+                    } else {
+                      newPaymentReceived = 0;
+                      newStatus = 'DUE';
+                      remainingAdjustment += newPaymentReceived; // keep remaining negative
+                    }
+                  } else {
+                    // Adjustment is exactly 0, which means no cash was paid and no products returned for this customer.
+                    // If original invoice status was already DUE, keep it as DUE. If it was PAID/PARTIAL, keep it.
+                  }
+
+                  transaction.update(doc(db, 'sales', inv.id), {
+                    status: newStatus,
+                    paymentReceived: newPaymentReceived
+                  });
+                });
               });
-            });
-          }
+            }
 
-          // F. Shortages DSR ledger entries
-          if (sheet.reconciliation && sheet.reconciliation.shortage > 0) {
-            const shortageEntryId = `ledger-dsr-short-${sheet.id}-${Date.now()}`;
-            const selectedType = sheetShortageTypes[sheet.id] || 'SHORTAGE';
-            batch.set(doc(db, 'staffLedgers', shortageEntryId), {
-              id: shortageEntryId,
-              staffId: sheet.dsrId,
-              staffName: sheet.dsrName,
-              staffRole: 'DSR',
-              type: selectedType,
-              referenceId: sheet.id,
-              referenceNo: `DSR-${sheet.id.slice(-5).toUpperCase()}`,
-              date: sheet.date,
-              amount: sheet.reconciliation.shortage,
-              balanceAfter: sheet.reconciliation.shortage,
-              remarks: `DSR Route Shortage recorded from Route ${sheet.route} categorized as ${selectedType === 'SHORTAGE' ? 'Recoverable Debt (আদায়যোগ্য দেনা)' : 'Salary Advance (বেতন অগ্রিম)'}`,
-              createdAt: new Date().toISOString()
+            // Shortages DSR ledger entries & outstanding DSR balance update
+            if (sheet.reconciliation && sheet.reconciliation.shortage > 0 && !(sheet as any).shortageLogged) {
+              const shortageEntryId = `ledger-dsr-short-${sheet.id}-${Date.now()}`;
+              const selectedType = sheetShortageTypes[sheet.id] || 'SHORTAGE';
+              transaction.set(doc(db, 'staffLedgers', shortageEntryId), {
+                id: shortageEntryId,
+                staffId: sheet.dsrId,
+                staffName: sheet.dsrName,
+                staffRole: 'DSR',
+                type: selectedType,
+                referenceId: sheet.id,
+                referenceNo: `DSR-${sheet.id.slice(-5).toUpperCase()}`,
+                date: sheet.date,
+                amount: sheet.reconciliation.shortage,
+                balanceAfter: sheet.reconciliation.shortage,
+                remarks: `DSR Route Shortage recorded from Route ${sheet.route} categorized as ${selectedType === 'SHORTAGE' ? 'Recoverable Debt (আদায়যোগ্য দেনা)' : 'Salary Advance (বেতন অগ্রিম)'}`,
+                createdAt: new Date().toISOString()
+              });
+
+              // Update DSR user outstanding shortage balance
+              const dsrUserSnap = dsrUserSnaps.find(snap => snap.id === sheet.dsrId);
+              if (dsrUserSnap && dsrUserSnap.exists()) {
+                const dsrUserData = dsrUserSnap.data();
+                const prevDsrShortage = dsrUserData?.outstandingShortage || 0;
+                transaction.update(doc(db, 'users', sheet.dsrId), {
+                  outstandingShortage: prevDsrShortage + sheet.reconciliation.shortage
+                });
+              }
+            }
+
+            // Stock integrity checkpoint chaining inside the transaction
+            if (sheet.items) {
+              sheet.items.forEach(it => {
+                const prodSnap = productSnaps.find(snap => snap.id === it.productId);
+                if (prodSnap && prodSnap.exists()) {
+                  const prodData = prodSnap.data();
+                  console.log(`Transaction integrity check passed: Product "${it.name}" stock verified as ${prodData.stockCount}.`);
+                }
+              });
+            }
+          }
+        });
+
+        // C. Subtract Manager Shortage & write to Manager Ledger as Advance Salary
+        if (targetSettlement.shortage > 0) {
+          const mgrLedgerId = `ledger-mgr-short-${targetSettlement.id}-${Date.now()}`;
+          transaction.set(doc(db, 'staffLedgers', mgrLedgerId), {
+            id: mgrLedgerId,
+            staffId: targetSettlement.submittedBy,
+            staffName: targetSettlement.submittedByName,
+            staffRole: 'Manager',
+            type: 'SALARY_ADVANCE',
+            referenceId: targetSettlement.id,
+            referenceNo: `SETTLE-${targetSettlement.id.slice(-5).toUpperCase()}`,
+            date: targetSettlement.date,
+            amount: targetSettlement.shortage,
+            balanceAfter: targetSettlement.shortage,
+            remarks: `Manager daily transfer cash shortage logged as salary advance. Approval ID: ${targetSettlement.id}`,
+            createdAt: new Date().toISOString()
+          });
+
+          // Update manager's user profile outstanding shortages
+          if (managerSnap.exists()) {
+            const managerData = managerSnap.data();
+            const prevShortage = managerData?.outstandingShortage || 0;
+            transaction.update(managerUserRef, {
+              outstandingShortage: prevShortage + targetSettlement.shortage
             });
           }
         }
-      }
-
-      // 3. Subtract Manager Shortage & write to Manager Ledger as Advance Salary
-      if (targetSettlement.shortage > 0) {
-        const mgrLedgerId = `ledger-mgr-short-${targetSettlement.id}-${Date.now()}`;
-        batch.set(doc(db, 'staffLedgers', mgrLedgerId), {
-          id: mgrLedgerId,
-          staffId: targetSettlement.submittedBy,
-          staffName: targetSettlement.submittedByName,
-          staffRole: 'Manager',
-          type: 'SALARY_ADVANCE',
-          referenceId: targetSettlement.id,
-          referenceNo: `SETTLE-${targetSettlement.id.slice(-5).toUpperCase()}`,
-          date: targetSettlement.date,
-          amount: targetSettlement.shortage,
-          balanceAfter: targetSettlement.shortage,
-          remarks: `Manager daily transfer cash shortage logged as salary advance. Approval ID: ${targetSettlement.id}`,
-          createdAt: new Date().toISOString()
-        });
-
-        // Update manager's user profile outstanding shortages
-        const managerObj = usersSnap.docs.find(u => u.id === targetSettlement.submittedBy)?.data();
-        const prevShortage = managerObj?.outstandingShortage || 0;
-        batch.update(doc(db, 'users', targetSettlement.submittedBy), {
-          outstandingShortage: prevShortage + targetSettlement.shortage
-        });
-      }
-
-      await batch.commit();
+      });
 
       // Log completion activity
       await logActivity(
@@ -649,9 +891,11 @@ export default function ManagerSettlementView() {
 
       alert('সমন্বিত ডেইলি সেটেলমেন্ট চূড়ান্তভাবে অনুমোদিত হয়েছে! ইনভেন্টরি, মার্কেট খতিয়ান, এবং ম্যানেজার লেজারে বেতন অগ্রিম পোস্টিং করা হয়েছে।');
       loadData();
-    } catch (err) {
-      console.error('Error approving daily settlement:', err);
-      alert('সেটেলমেন্ট অনুমোদন করতে ব্যর্থ হয়েছে।');
+    } catch (err: any) {
+      console.error('Error approving daily settlement transaction:', err);
+      const errorCode = err?.code || 'unknown-error';
+      const errorMessage = err?.message || String(err);
+      alert(`সেটেলমেন্ট অনুমোদন করতে ব্যর্থ হয়েছে।\n(Error code: ${errorCode})\n\nত্রুটির বিবরণ: ${errorMessage}`);
     } finally {
       setLoading(false);
     }
@@ -729,6 +973,7 @@ export default function ManagerSettlementView() {
           </p>
         </div>
         <div className="flex space-x-2 items-center">
+          <ConnectionStatusBadge />
           <input
             type="date"
             value={selectedDate}
@@ -778,6 +1023,48 @@ export default function ManagerSettlementView() {
                 সেটেলমেন্ট অবস্থা: {activeSettlement.status === 'approved' ? 'APPROVED & BOOKED' : 'PENDING ADMIN APPROVAL'}
               </span>
             )}
+          </div>
+
+          {/* Database Diagnostic Notification Bar */}
+          <div className={`p-4 rounded-2xl border transition-all flex flex-col md:flex-row md:items-center justify-between gap-3 ${
+            dbState.status === 'connected' ? 'bg-emerald-50/55 border-emerald-200 text-emerald-800' :
+            dbState.status === 'error' ? 'bg-rose-50 border-rose-200 text-rose-800 animate-pulse' :
+            'bg-slate-50 border-slate-200 text-slate-700'
+          }`} id="firestore-connection-diagnostic-banner">
+            <div className="flex items-center space-x-2.5">
+              {dbState.status === 'connected' && (
+                <CheckCircle className="w-5 h-5 text-emerald-600 flex-shrink-0" />
+              )}
+              {dbState.status === 'error' && (
+                <AlertTriangle className="w-5 h-5 text-rose-600 flex-shrink-0" />
+              )}
+              {(dbState.status === 'checking' || dbState.status === 'idle') && (
+                <RefreshCw className="w-5 h-5 text-blue-500 animate-spin flex-shrink-0" />
+              )}
+              <div>
+                <h4 className="text-xs font-extrabold uppercase tracking-wide">
+                  {dbState.status === 'connected' ? 'ডাটাবেজ সংযোগ সচল ও রাইট পারমিশন ভেরিফাইড (Firestore Ready)' :
+                   dbState.status === 'error' ? 'ডাটাবেজ সংযোগ ত্রুটি! লেনদেন ব্লকড (Firestore Disconnected)' :
+                   'ডাটাবেজ সংযোগ পরীক্ষা করা হচ্ছে... (Testing Firestore Write Connection...)'}
+                </h4>
+                <p className="text-[11px] opacity-90 mt-0.5">
+                  {dbState.status === 'connected' && `ডাটাবেজ সফলভাবে রেসপন্স করেছে। লেটেন্সি: ${dbState.latency}ms। আপনার সব জটিল পোস্টিং সুরক্ষিত ও ইনস্ট্যান্টলি সংরক্ষিত হবে।`}
+                  {dbState.status === 'error' && `সতর্কতা: নেটওয়ার্ক বা সিকিউরিটি রুল ব্লক রয়েছে! ত্রুটি: ${dbState.error || 'Firestore write permission blocked.'}`}
+                  {dbState.status === 'checking' && 'ফায়ারস্টোর ডাটাবেজে একটি টেস্ট ডাটা রাইট করে কানেক্টিভিটি ও রাইট পারমিশন যাচাই করা হচ্ছে...'}
+                  {dbState.status === 'idle' && 'ডাটাবেজ সংযোগ এখনো পরীক্ষা করা হয়নি।'}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={runDiagnostics}
+                disabled={dbState.status === 'checking'}
+                className="px-3.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 font-bold text-[10px] rounded-lg border border-slate-200 hover:border-slate-300 shadow-sm cursor-pointer transition-all disabled:opacity-50"
+              >
+                {dbState.status === 'checking' ? 'যাচাই হচ্ছে...' : 'কানেকশন টেস্ট করুন (Ping DB)'}
+              </button>
+            </div>
           </div>
 
           {/* 1. SUPPLIER WISE BREAKDOWN SECTION */}
@@ -1021,14 +1308,142 @@ export default function ManagerSettlementView() {
 
             </div>
 
+            {/* AUTOMATED DEDUCTION CALCULATOR & READY SALES DESK */}
+            <div className="bg-slate-950/60 p-5 rounded-2xl border border-slate-800/80 space-y-4">
+              <div className="border-b border-slate-800 pb-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <div>
+                  <h4 className="text-sm font-extrabold text-blue-400 flex items-center gap-2">
+                    <Calculator className="w-4 h-4" />
+                    স্বয়ংক্রিয় কর্তন ও জমাযোগ্য টাকার হিসাব (Automated Deduction Calculator)
+                  </h4>
+                  <p className="text-[10px] text-slate-400 italic">ডিএসআর নেট কালেকশন থেকে খরচ, রিটার্ন ও ড্যামেজ কর্তন করে রেডি সেলস যোগ করার হিসাব</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* 1. DSR Cash Collection Breakdown */}
+                <div className="space-y-2 border-r border-slate-800/50 pr-4">
+                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">১. ডিএসআর ক্যাশ কালেকশন (DSR Cash Collection)</span>
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-slate-400">লোডেড প্রোডাক্ট গ্রস মূল্য (Load Gross):</span>
+                    <span className="font-mono text-slate-300">৳{totalAssignedValue.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs text-emerald-400">
+                    <span>পূর্বের বকেয়া আদায় (+) (Old Coll.):</span>
+                    <span className="font-mono font-bold">৳{todayOldCollections.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs text-amber-400">
+                    <span>নতুন কাস্টমার বাকি (-) (New Due):</span>
+                    <span className="font-mono font-bold">- ৳{todayNewCustomerDues.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs text-purple-400">
+                    <span>ফ্রি ও ডিসকাউন্ট (-) (Free & Disc):</span>
+                    <span className="font-mono font-bold">- ৳{(todayFreeValue + todayDiscountValue).toLocaleString()}</span>
+                  </div>
+                  <div className="border-t border-slate-800 pt-1.5 flex justify-between items-center text-xs font-bold text-white">
+                    <span>ডিএসআর নেট ক্যাশ কালেকশন:</span>
+                    <span className="font-mono text-emerald-300">৳{dsrNetCashCollection.toLocaleString()}</span>
+                  </div>
+                </div>
+
+                {/* 2. Automated Deductions */}
+                <div className="space-y-2 border-r border-slate-800/50 pr-4">
+                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">২. বাদসমূহ / কর্তন (Automated Deductions)</span>
+                  <div className="flex justify-between items-center text-xs text-rose-400">
+                    <span>রুট ও অফিস মোট খরচ (-) (Expenses):</span>
+                    <span className="font-mono font-bold">- ৳{totalExpenses.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs text-indigo-400">
+                    <span>রিটার্ন পণ্যের মূল্য (-) (Returns):</span>
+                    <span className="font-mono font-bold">- ৳{totalReturnValue.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs text-slate-400">
+                    <span>ড্যামেজ পণ্যের মূল্য (-) (Damages):</span>
+                    <span className="font-mono font-bold">- ৳{todayDamageValue.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-xs text-red-400">
+                    <span>ডিএসআর ক্যাশ শর্ট/ঘাটতি (-) (DSR Shortages):</span>
+                    <span className="font-mono font-bold">- ৳{totalDsrShortages.toLocaleString()}</span>
+                  </div>
+                  <div className="border-t border-slate-800 pt-1.5 flex justify-between items-center text-xs font-bold text-slate-300">
+                    <span>মোট কর্তন (Total Deductions):</span>
+                    <span className="font-mono text-rose-300">- ৳{(totalExpenses + totalReturnValue + todayDamageValue + totalDsrShortages).toLocaleString()}</span>
+                  </div>
+                </div>
+
+                {/* 3. Depot Additions & Ready Sales Option */}
+                <div className="space-y-2">
+                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">৩. ডিপো সংযোজন ও রেডি সেলস (Ready Sales Option)</span>
+                  
+                  <div className="p-3 bg-slate-900/60 border border-slate-800 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-slate-300 font-bold">রেডি সেলস এন্ট্রি (Ready Sales Amount):</span>
+                      <label className="flex items-center space-x-1 cursor-pointer text-[9px] text-slate-400 font-bold">
+                        <input
+                          type="checkbox"
+                          checked={isAutoReadySales}
+                          onChange={(e) => setIsAutoReadySales(e.target.checked)}
+                          disabled={!!activeSettlement}
+                          className="rounded border-slate-700 bg-slate-950 text-blue-600 focus:ring-0 w-3 h-3 cursor-pointer"
+                        />
+                        <span>অটো-হিসাব</span>
+                      </label>
+                    </div>
+
+                    <div className="relative">
+                      <span className="absolute left-2.5 top-1.5 text-slate-500 text-xs font-bold">৳</span>
+                      <input
+                        type="number"
+                        value={activeSettlement ? currentReadySales : (readySalesInput || '')}
+                        onChange={(e) => {
+                          if (!isAutoReadySales) {
+                            setReadySalesInput(Math.max(0, parseFloat(e.target.value) || 0));
+                          }
+                        }}
+                        disabled={isAutoReadySales || !!activeSettlement}
+                        placeholder="আজকের রেডি সেলস"
+                        className="w-full bg-slate-950 border border-slate-800 text-blue-400 pl-6 pr-2 py-1 rounded text-xs focus:outline-none focus:border-blue-500 font-bold font-mono"
+                      />
+                    </div>
+                    <p className="text-[8px] text-slate-500 leading-normal italic">
+                      {isAutoReadySales
+                        ? `আজকের নন-ডিএসআর মেমো থেকে অটো সংগৃহীত: ৳${calculatedReadySalesValue.toLocaleString()}`
+                        : 'ম্যানুয়ালি রেডি সেলস নগদ টাকার পরিমাণ লিখুন।'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Ready-to-Deposit Summary Footer Banner */}
+              <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg">
+                    <TrendingUp className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wider block">চূড়ান্ত নগদ জমাযোগ্য ব্যালেন্স (Final Ready-to-Deposit Amount)</span>
+                    <h5 className="text-xl font-black font-mono text-emerald-400">৳{readyToDeposit.toLocaleString()}</h5>
+                  </div>
+                </div>
+                {!activeSettlement && (
+                  <button
+                    onClick={() => setAdminTransferInput(readyToDeposit)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 active:scale-95 transition-all text-slate-950 rounded-lg text-xs font-black cursor-pointer"
+                  >
+                    হস্তান্তর টাকা অটো-ফিল করুন (Copy to Deposit)
+                  </button>
+                )}
+              </div>
+            </div>
+
             {/* Final Cash Equation Panel */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t border-slate-800/60 items-center">
               
               {/* Calculated manager balance */}
               <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-1">
-                <span className="text-[10px] text-blue-400 font-extrabold uppercase tracking-wider block">ম্যানেজার একাউন্টে ব্যালেন্স (Manager Balance)</span>
-                <div className="text-2xl font-black font-mono text-white">৳{calculatedManagerBalance.toLocaleString()}</div>
-                <p className="text-[9px] text-slate-500 italic">আজকের প্রদেয় নেট নগদ কালেকশন যা ম্যানেজারের ক্যাশে থাকার কথা।</p>
+                <span className="text-[10px] text-blue-400 font-extrabold uppercase tracking-wider block">জমাযোগ্য মোট ক্যাশ (Ready-to-Deposit)</span>
+                <div className="text-2xl font-black font-mono text-white">৳{readyToDeposit.toLocaleString()}</div>
+                <p className="text-[9px] text-slate-500 italic">আজকের প্রদেয় নেট নগদ কালেকশন ও রেডি সেলস সমন্বয় হিসাব।</p>
               </div>
 
               {/* Input for Admin Transfer */}
@@ -1064,7 +1479,7 @@ export default function ManagerSettlementView() {
 
             {/* Balance formula details text */}
             <p className="text-[10px] text-slate-500 text-center italic font-mono">
-              ক্যালকুলেশন মেথড: আজকের মোট নেট বিক্রি (৳{todaySalesValue.toLocaleString()}) + পূর্বের বকেয়া কালেকশন (৳{todayOldCollections.toLocaleString()}) - নতুন কাস্টমার বাকি (৳{todayNewCustomerDues.toLocaleString()}) - ফ্রী প্রোডাক্ট (৳{todayFreeValue.toLocaleString()}) - ডিসকাউন্ট (৳{todayDiscountValue.toLocaleString()}) - মার্কেট খরচ (৳{totalExpenses.toLocaleString()}) - ড্যামেজ রিটার্ন (৳{todayDamageValue.toLocaleString()}) = ৳{calculatedManagerBalance.toLocaleString()}
+              ক্যালকুলেশন মেথড: ডিএসআর নেট কালেকশন (৳{dsrNetCashCollection.toLocaleString()}) - খরচ (৳{totalExpenses.toLocaleString()}) - রিটার্ন (৳{totalReturnValue.toLocaleString()}) - ড্যামেজ (৳{todayDamageValue.toLocaleString()}) - ডিএসআর শর্ট (৳{totalDsrShortages.toLocaleString()}) + রেডি সেলস (৳{currentReadySales.toLocaleString()}) = মোট জমাযোগ্য ৳{readyToDeposit.toLocaleString()}
             </p>
           </div>
 
@@ -1180,8 +1595,8 @@ export default function ManagerSettlementView() {
               {/* Financial Summary Card */}
               <div className="grid grid-cols-3 gap-4 bg-slate-50 p-4 rounded-2xl border border-slate-100 text-center">
                 <div className="space-y-1">
-                  <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider block">ম্যানেজার নগদ ব্যালেন্স</span>
-                  <div className="text-lg font-mono font-black text-slate-800">৳{calculatedManagerBalance.toLocaleString()}</div>
+                  <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider block">জমাযোগ্য মোট ক্যাশ (Ready-to-Deposit)</span>
+                  <div className="text-lg font-mono font-black text-slate-800">৳{((activeSettlement as any).readyToDeposit || readyToDeposit).toLocaleString()}</div>
                 </div>
                 <div className="space-y-1 border-x px-2">
                   <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider block">নগদ এডমিন হস্তান্তর</span>

@@ -1,6 +1,6 @@
 {
   "name": "SAMIRA TRADERS (DMS)",
   "description": "A comprehensive, professional, full-scale Distribution Management System (DMS) for SAMIRA TRADERS with dual sub-depots, role-based controls, inventory tracking, collection routing, and detailed multi-ledger reporting.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

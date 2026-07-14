@@ -42,7 +42,14 @@ export default function CustomerView({ onSelectCustomerForLedger }: CustomerView
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState(() => {
+    const globalSearch = sessionStorage.getItem('dms_global_search_term');
+    if (globalSearch) {
+      sessionStorage.removeItem('dms_global_search_term');
+      return globalSearch;
+    }
+    return '';
+  });
   
   // Filtering states
   const [selectedRoute, setSelectedRoute] = useState('');

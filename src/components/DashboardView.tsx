@@ -19,7 +19,9 @@ import {
   RefreshCw,
   Users,
   Warehouse,
-  Gift
+  Gift,
+  AlertTriangle,
+  ChevronRight
 } from 'lucide-react';
 import { 
   collection, 
@@ -74,6 +76,7 @@ export default function DashboardView({
 
   const [recentSales, setRecentSales] = useState<SalesInvoice[]>([]);
   const [recentCollections, setRecentCollections] = useState<Collection[]>([]);
+  const [lowStockProducts, setLowStockProducts] = useState<Product[]>([]);
 
   // Weekly data for custom charts
   const [weeklySales, setWeeklySales] = useState<number[]>([12000, 19000, 15000, 25000, 22000, 30000, 27000]);
@@ -165,6 +168,10 @@ export default function DashboardView({
         damageProductValueSum += (data.purchasePrice || 0) * (data.damageStock || 0);
       });
       const totalInventoryValueSum = freshProductValueSum + damageProductValueSum;
+
+      // Calculate low stock products (stockCount <= reorderLevel, defaulting reorderLevel to minimumStock or 10 if not present)
+      const lowStock = productsList.filter(p => !p.isDeleted && p.stockCount <= (p.reorderLevel !== undefined ? p.reorderLevel : (p.minimumStock !== undefined ? p.minimumStock : 10)));
+      setLowStockProducts(lowStock);
 
       // Calculate cost of goods sold for Profit Margin
       salesInvoices.forEach(inv => {
@@ -391,6 +398,99 @@ export default function DashboardView({
           </button>
         </div>
       </div>
+
+      {/* Low Stock Notifications Center Widget */}
+      {(userRole === 'Super Admin' || userRole === 'Manager') && lowStockProducts.length > 0 && (
+        <div className="bg-amber-50/40 border-2 border-amber-200/60 p-5 rounded-2xl shadow-sm space-y-4 animate-fade-in" id="dashboard-low-stock-alert-panel">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-amber-200/50 pb-3">
+            <div className="flex items-center space-x-2 text-amber-800">
+              <AlertTriangle className="w-5.5 h-5.5 text-amber-500 shrink-0 animate-bounce" />
+              <div>
+                <h3 className="font-extrabold text-sm uppercase tracking-wider">Low Stock Notifications ({lowStockProducts.length})</h3>
+                <p className="text-[10.5px] text-amber-700 font-medium">Critical inventory items requiring immediate reorder action to prevent distribution shortages</p>
+              </div>
+            </div>
+            
+            <button
+              onClick={() => onQuickAction('purchases')}
+              className="flex items-center justify-center space-x-1.5 bg-amber-600 hover:bg-amber-700 text-white px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer self-start sm:self-center"
+            >
+              <span>Bulk Purchase Reorder</span>
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-amber-200 bg-white">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-amber-50/60 text-[10px] font-black uppercase text-amber-800 tracking-wider border-b border-amber-200/50">
+                  <th className="px-4 py-2.5">Product Details</th>
+                  <th className="px-4 py-2.5">Brand / Category</th>
+                  <th className="px-4 py-2.5 text-center">Reorder Threshold</th>
+                  <th className="px-4 py-2.5 text-center">Current Stock</th>
+                  <th className="px-4 py-2.5 text-center">Status</th>
+                  <th className="px-4 py-2.5 text-right">Quick Restock</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-amber-100 text-[11px] text-slate-700">
+                {lowStockProducts.slice(0, 5).map((prod) => {
+                  const threshold = prod.reorderLevel !== undefined ? prod.reorderLevel : (prod.minimumStock !== undefined ? prod.minimumStock : 10);
+                  const isSevere = prod.stockCount <= threshold * 0.5;
+                  return (
+                    <tr key={prod.id} className="hover:bg-amber-50/20 transition-colors">
+                      <td className="px-4 py-2.5 font-bold text-slate-800">
+                        {prod.name}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className="block font-medium text-slate-500">{prod.brand || 'No Brand'}</span>
+                        <span className="text-[9.5px] text-slate-400 capitalize">{prod.category || 'General'}</span>
+                      </td>
+                      <td className="px-4 py-2.5 text-center font-semibold text-slate-600">
+                        {threshold} Pcs
+                      </td>
+                      <td className="px-4 py-2.5 text-center">
+                        <span className={`inline-block px-2 py-0.5 rounded-md font-mono font-black ${
+                          isSevere ? 'bg-rose-100 text-rose-800 border border-rose-200' : 'bg-amber-100 text-amber-800 border border-amber-200'
+                        }`}>
+                          {prod.stockCount} Pcs
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 text-center">
+                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold ${
+                          isSevere ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
+                        }`}>
+                          <span className={`w-1.5 h-1.5 rounded-full mr-1 ${isSevere ? 'bg-rose-500 animate-ping' : 'bg-amber-500 animate-pulse'}`}></span>
+                          {isSevere ? 'Critically Low' : 'Below Reorder Point'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 text-right">
+                        <button
+                          onClick={() => onQuickAction('purchases')}
+                          className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-lg text-[10px] transition-all shadow-sm cursor-pointer"
+                        >
+                          Restock Product
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {lowStockProducts.length > 5 && (
+            <div className="text-right">
+              <button
+                onClick={() => onQuickAction('inventory')}
+                className="text-[10.5px] text-amber-700 font-bold hover:text-amber-800 hover:underline inline-flex items-center space-x-1 cursor-pointer"
+              >
+                <span>And {lowStockProducts.length - 5} more products require attention. View full Inventory</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Grid of Key Performance Cards Categorized by ERP Modules */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="dashboard-erp-categories-grid">

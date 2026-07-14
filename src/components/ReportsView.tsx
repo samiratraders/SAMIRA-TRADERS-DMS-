@@ -78,6 +78,8 @@ export default function ReportsView() {
   const [selectedProductId, setSelectedProductId] = useState('');
   const [selectedRepName, setSelectedRepName] = useState('');
   const [selectedCompanyId, setSelectedCompanyId] = useState('');
+  const [selectedArea, setSelectedArea] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('');
 
   // Sorting State
   const [sortField, setSortField] = useState<string>('date');
@@ -100,6 +102,11 @@ export default function ReportsView() {
     if (selectedCompanyId && inv.companyId !== selectedCompanyId) return false;
     if (selectedRepName && inv.dsrName !== selectedRepName) return false;
     if (selectedProductId && !inv.items.some(item => item.productId === selectedProductId)) return false;
+    if (selectedArea && inv.area !== selectedArea && inv.route !== selectedArea) return false;
+    if (selectedCategory && !inv.items.some(item => {
+      const prod = products.find(p => p.id === item.productId);
+      return (prod?.category || 'General') === selectedCategory;
+    })) return false;
     return true;
   });
 
@@ -129,6 +136,17 @@ export default function ReportsView() {
     if (selectedCustomerId && col.customerId !== selectedCustomerId) return false;
     if (selectedCompanyId && col.companyId !== selectedCompanyId) return false;
     if (selectedRepName && col.collectedByName !== selectedRepName) return false;
+    if (selectedArea && col.area !== selectedArea && col.route !== selectedArea) return false;
+    if (selectedCategory) {
+      const custInvoices = invoices.filter(i => i.customerId === col.customerId);
+      const hasCategoryPurchase = custInvoices.some(inv => 
+        inv.items.some(item => {
+          const prod = products.find(p => p.id === item.productId);
+          return (prod?.category || 'General') === selectedCategory;
+        })
+      );
+      if (!hasCategoryPurchase) return false;
+    }
     return true;
   });
 
@@ -151,6 +169,10 @@ export default function ReportsView() {
     if (startDate && exp.date < startDate) return false;
     if (endDate && exp.date > endDate) return false;
     if (selectedRepName && exp.staffName !== selectedRepName) return false;
+    if (selectedArea && !(
+      (exp.description && exp.description.toLowerCase().includes(selectedArea.toLowerCase())) ||
+      (exp.routeName && exp.routeName.toLowerCase().includes(selectedArea.toLowerCase()))
+    )) return false;
     return true;
   });
 
@@ -180,6 +202,22 @@ export default function ReportsView() {
     if (endDate && entry.date > endDate) return false;
     if (selectedCustomerId && entry.customerId !== selectedCustomerId) return false;
     if (selectedCompanyId && entry.companyId !== selectedCompanyId) return false;
+    if (selectedArea) {
+      const custObj = customers.find(c => c.id === entry.customerId);
+      if (!custObj || (custObj.area !== selectedArea && custObj.route !== selectedArea)) return false;
+    }
+    if (selectedCategory && entry.type === 'INVOICE') {
+      const invObj = invoices.find(i => i.id === entry.referenceId || i.invoiceNo === entry.referenceNo);
+      if (invObj) {
+        const hasCategory = invObj.items.some(item => {
+          const prod = products.find(p => p.id === item.productId);
+          return (prod?.category || 'General') === selectedCategory;
+        });
+        if (!hasCategory) return false;
+      } else {
+        return false;
+      }
+    }
     return true;
   });
 
@@ -203,6 +241,10 @@ export default function ReportsView() {
     if (endDate && pur.date > endDate) return false;
     if (selectedCompanyId && pur.companyId !== selectedCompanyId) return false;
     if (selectedProductId && !pur.items.some(item => item.productId === selectedProductId)) return false;
+    if (selectedCategory && !pur.items.some(item => {
+      const prod = products.find(p => p.id === item.productId);
+      return (prod?.category || 'General') === selectedCategory;
+    })) return false;
     return true;
   });
 
@@ -509,7 +551,7 @@ export default function ReportsView() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-3">
           {/* Date range from */}
           <div className="space-y-1">
             <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">From Date</label>
@@ -595,6 +637,41 @@ export default function ReportsView() {
               ))}
             </select>
           </div>
+
+          {/* Area filter */}
+          <div className="space-y-1">
+            <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Area / Route</label>
+            <select
+              value={selectedArea}
+              onChange={(e) => setSelectedArea(e.target.value)}
+              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-gray-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="">All Areas</option>
+              {Array.from(new Set([
+                ...customers.map(c => c.area).filter(Boolean),
+                ...customers.map(c => c.route).filter(Boolean),
+                ...invoices.map(i => i.area).filter(Boolean),
+                ...invoices.map(i => i.route).filter(Boolean)
+              ])).map(area => (
+                <option key={area} value={area}>{area}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Category filter */}
+          <div className="space-y-1">
+            <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Product Category</label>
+            <select
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-gray-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="">All Categories</option>
+              {Array.from(new Set(products.map(p => p.category || 'General').filter(Boolean))).map(cat => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {/* Clear filter and filter state summary */}
@@ -606,10 +683,12 @@ export default function ReportsView() {
               selectedCustomerId && 'Customer selected',
               selectedProductId && 'Product selected',
               selectedRepName && 'Rep: ' + selectedRepName,
-              selectedCompanyId && 'Company selected'
+              selectedCompanyId && 'Company selected',
+              selectedArea && 'Area: ' + selectedArea,
+              selectedCategory && 'Category: ' + selectedCategory
             ].filter(Boolean).join(', ') || 'None (Showing full dataset)'}
           </div>
-          {(startDate || endDate || selectedCustomerId || selectedProductId || selectedRepName || selectedCompanyId) && (
+          {(startDate || endDate || selectedCustomerId || selectedProductId || selectedRepName || selectedCompanyId || selectedArea || selectedCategory) && (
             <button
               onClick={() => {
                 setStartDate('');
@@ -618,6 +697,8 @@ export default function ReportsView() {
                 setSelectedProductId('');
                 setSelectedRepName('');
                 setSelectedCompanyId('');
+                setSelectedArea('');
+                setSelectedCategory('');
               }}
               className="text-xs text-rose-600 hover:text-rose-700 font-bold bg-rose-50 hover:bg-rose-100 px-3 py-1.5 rounded-lg border border-rose-200 transition-colors cursor-pointer"
             >

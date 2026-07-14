@@ -28,6 +28,82 @@ export default function PurchaseView() {
   const [paymentPaid, setPaymentPaid] = useState<number>(0);
   const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'BANK_TRANSFER' | 'CREDIT'>('CASH');
 
+  // Auto-save states
+  const [hasAutosavedDraft, setHasAutosavedDraft] = useState(false);
+  const [lastSavedTime, setLastSavedTime] = useState<string | null>(null);
+  const [isFlashActive, setIsFlashActive] = useState(false);
+
+  // Check for auto-saved draft when modal opens
+  useEffect(() => {
+    if (isAddModalOpen) {
+      const saved = localStorage.getItem('dms_autosave_purchase');
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed.supplierId || parsed.companyId || (parsed.items && parsed.items.length > 0)) {
+            setHasAutosavedDraft(true);
+          }
+        } catch (e) {
+          console.error("Failed to parse auto-saved purchase draft", e);
+        }
+      }
+    } else {
+      setHasAutosavedDraft(false);
+    }
+  }, [isAddModalOpen]);
+
+  // Periodic auto-save effect
+  useEffect(() => {
+    if (!isAddModalOpen) return;
+
+    const interval = setInterval(() => {
+      const draft = {
+        supplierId,
+        companyId,
+        purchaseDate,
+        items,
+        paymentPaid,
+        paymentMethod
+      };
+
+      if (supplierId || companyId || items.length > 0 || paymentPaid > 0) {
+        localStorage.setItem('dms_autosave_purchase', JSON.stringify(draft));
+        const now = new Date().toLocaleTimeString();
+        setLastSavedTime(now);
+        setIsFlashActive(true);
+        setTimeout(() => setIsFlashActive(false), 2000);
+        console.log(`[Auto-Save] Purchase order saved at ${now}`);
+      }
+    }, 30000); // every 30s
+
+    return () => clearInterval(interval);
+  }, [isAddModalOpen, supplierId, companyId, purchaseDate, items, paymentPaid, paymentMethod]);
+
+  const handleRestoreDraft = () => {
+    const saved = localStorage.getItem('dms_autosave_purchase');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed.supplierId !== undefined) setSupplierId(parsed.supplierId);
+        if (parsed.companyId !== undefined) setCompanyId(parsed.companyId);
+        if (parsed.purchaseDate !== undefined) setPurchaseDate(parsed.purchaseDate);
+        if (parsed.items !== undefined) setItems(parsed.items);
+        if (parsed.paymentPaid !== undefined) setPaymentPaid(parsed.paymentPaid);
+        if (parsed.paymentMethod !== undefined) setPaymentMethod(parsed.paymentMethod);
+
+        setHasAutosavedDraft(false);
+        alert('Purchase draft restored successfully! (ক্রয় ড্রাফট সফলভাবে পুনরুদ্ধার করা হয়েছে)');
+      } catch (e) {
+        console.error("Failed to restore purchase draft", e);
+      }
+    }
+  };
+
+  const handleDiscardDraft = () => {
+    localStorage.removeItem('dms_autosave_purchase');
+    setHasAutosavedDraft(false);
+  };
+
   // Product single adder
   const [currentProductId, setCurrentProductId] = useState('');
   const [currentCtn, setCurrentCtn] = useState<number>(0);
@@ -185,6 +261,7 @@ export default function PurchaseView() {
       }
 
       await batch.commit();
+      localStorage.removeItem('dms_autosave_purchase');
       setIsAddModalOpen(false);
       loadData();
     } catch (err) {
@@ -281,6 +358,41 @@ export default function PurchaseView() {
 
             <h3 className="text-lg font-bold text-gray-900 mb-1">Log Purchase Procurement</h3>
             <p className="text-xs text-gray-400 mb-6">File a factory order or supply invoice. Upon submittal, primary depot stocks increase instantly.</p>
+
+            {hasAutosavedDraft && (
+              <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center justify-between text-xs animate-fadeIn">
+                <div className="flex items-center space-x-2 text-blue-700">
+                  <span className="p-1 bg-blue-100 rounded text-base">📝</span>
+                  <div>
+                    <span className="font-extrabold block">We found an auto-saved purchase draft! (ক্রয় ড্রাফট পাওয়া গেছে)</span>
+                    <span className="text-[10px] text-blue-500 font-medium">Would you like to restore your previous progress?</span>
+                  </div>
+                </div>
+                <div className="flex space-x-2">
+                  <button
+                    type="button"
+                    onClick={handleRestoreDraft}
+                    className="px-2.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer transition-colors text-[10px]"
+                  >
+                    Restore Progress
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDiscardDraft}
+                    className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg cursor-pointer transition-colors text-[10px] border border-slate-250"
+                  >
+                    Discard
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {lastSavedTime && (
+              <div className="absolute top-4 left-6 flex items-center space-x-1.5 text-[10px] font-bold text-slate-400">
+                <span className={`w-1.5 h-1.5 rounded-full ${isFlashActive ? 'bg-emerald-500 animate-ping' : 'bg-slate-300'}`}></span>
+                <span>Last auto-saved: {lastSavedTime}</span>
+              </div>
+            )}
 
             <form onSubmit={handleCreatePurchase} className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

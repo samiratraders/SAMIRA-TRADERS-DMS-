@@ -30,25 +30,35 @@ export default function PrintWrapper({ type, title = 'রিপোর্ট স�
   const getWhatsAppShareLink = () => {
     let text = '';
     if (type === 'invoice') {
-      text = `*সামীরা ট্রেডার্স (Samira Traders)*\n` +
-             `*সেলস ইনভয়েস মেমো*\n` +
-             `---------------------------------\n` +
-             `*মেমো নম্বর:* ${data.invoiceNo || data.id}\n` +
-             `*তারিখ:* ${data.date}\n` +
-             `*গ্রাহক:* ${data.shopName || 'Spot Client'}\n` +
-             `*রুট/এরিয়া:* ${data.route || 'N/A'}\n` +
-             `*কোম্পানি:* ${data.companyName || 'N/A'}\n` +
-             `---------------------------------\n` +
-             `*আইটেম বিবরণী:*\n` +
-             (data.items || []).map((item: any) => `• ${item.name} - ${item.qty} পিস @ ৳${item.price} = ৳${item.total}`).join('\n') + `\n` +
-             `---------------------------------\n` +
-             `*সাব-টোটাল:* ৳${data.subTotal?.toLocaleString()}\n` +
-             `*ডিসকাউন্ট:* ৳${data.discount?.toLocaleString()}\n` +
-             `*সর্বমোট বিল:* ৳${data.grandTotal?.toLocaleString()}\n` +
-             `*আজ জমা:* ৳${data.paymentReceived?.toLocaleString()}\n` +
-             `*বকেয়া:* ৳${(data.grandTotal - data.paymentReceived)?.toLocaleString()}\n` +
-             `---------------------------------\n` +
-             `_ধন্যবাদ, আমাদের সাথেই থাকুন!_`;
+      if (data.invoices && Array.isArray(data.invoices)) {
+        text = `*সামীরা ট্রেডার্স (Samira Traders)*\n` +
+               `*বাল্ক বিক্রয় ইনভয়েস তালিকা (${data.invoices.length} মেমো)*\n` +
+               `---------------------------------\n` +
+               data.invoices.map((inv: any, idx: number) => `${idx + 1}. মেমো নং: ${inv.invoiceNo} - ${inv.shopName} (৳${inv.grandTotal?.toLocaleString()})`).join('\n') + `\n` +
+               `---------------------------------\n` +
+               `*মোট নির্বাচিত ইনভয়েস বিল:* ৳${data.invoices.reduce((sum: number, inv: any) => sum + (inv.grandTotal || 0), 0).toLocaleString()}\n` +
+               `_ধন্যবাদ, আমাদের সাথেই থাকুন!_`;
+      } else {
+        text = `*সামীরা ট্রেডার্স (Samira Traders)*\n` +
+               `*সেলস ইনভয়েস মেমো*\n` +
+               `---------------------------------\n` +
+               `*মেমো নম্বর:* ${data.invoiceNo || data.id}\n` +
+               `*তারিখ:* ${data.date}\n` +
+               `*গ্রাহক:* ${data.shopName || 'Spot Client'}\n` +
+               `*রুট/এরিয়া:* ${data.route || 'N/A'}\n` +
+               `*কোম্পানি:* ${data.companyName || 'N/A'}\n` +
+               `---------------------------------\n` +
+               `*আইটেম বিবরণী:*\n` +
+               (data.items || []).map((item: any) => `• ${item.name} - ${item.qty} পিস @ ৳${item.price} = ৳${item.total}`).join('\n') + `\n` +
+               `---------------------------------\n` +
+               `*সাব-টোটাল:* ৳${data.subTotal?.toLocaleString()}\n` +
+               `*ডিসকাউন্ট:* ৳${data.discount?.toLocaleString()}\n` +
+               `*সর্বমোট বিল:* ৳${data.grandTotal?.toLocaleString()}\n` +
+               `*আজ জমা:* ৳${data.paymentReceived?.toLocaleString()}\n` +
+               `*বকেয়া:* ৳${(data.grandTotal - data.paymentReceived)?.toLocaleString()}\n` +
+               `---------------------------------\n` +
+               `_ধন্যবাদ, আমাদের সাথেই থাকুন!_`;
+      }
     } else if (type === 'settlement') {
       text = `*সামীরা ট্রেডার্স (Samira Traders)*\n` +
              `*ডিএসআর সেটেলমেন্ট রশিদ*\n` +
@@ -193,184 +203,282 @@ export default function PrintWrapper({ type, title = 'রিপোর্ট স�
             }`}
             id="printable-content"
           >
-            {/* Header Brand */}
-            <div className="text-center space-y-1 mb-4 pb-3 border-b border-gray-200">
-              <h2 className="text-base font-black text-slate-900 tracking-tight">সামীরা ট্রেডার্স (Samira Traders)</h2>
-              <p className="text-[10px] text-gray-500 font-medium">প্রোপ্রাইটার: আলহাজ্ব মো: সমির উদ্দিন</p>
-              <p className="text-[9px] text-gray-400">রুট ডিস্ট্রিবিউশন অ্যান্ড হোলসেল পার্টনার, নেত্রকোনা</p>
-              <p className="text-[9px] text-gray-400">মোবাইল: ০১৭১৫-XXXXXX, ০১৮১৯-XXXXXX</p>
-              <div className="inline-block bg-slate-100 text-slate-800 font-bold px-2 py-0.5 rounded text-[8px] uppercase tracking-wider mt-1.5">
-                {title}
+            {type === 'invoice' && data.invoices && Array.isArray(data.invoices) ? (
+              <div className="space-y-12 print:space-y-0">
+                {data.invoices.map((inv: any, idx: number) => (
+                  <div 
+                    key={inv.id} 
+                    className={`${idx > 0 ? 'border-t-2 border-dashed border-slate-300 pt-10 print:border-t-0 print:pt-0 print:break-before-page' : ''}`}
+                    style={idx > 0 ? { breakBefore: 'page', pageBreakBefore: 'always' } : {}}
+                  >
+                    {/* Header Brand */}
+                    <div className="text-center space-y-1 mb-4 pb-3 border-b border-gray-200">
+                      <h2 className="text-base font-black text-slate-900 tracking-tight">সামীরা ট্রেডার্স (Samira Traders)</h2>
+                      <p className="text-[10px] text-gray-500 font-medium">প্রোপ্রাইটার: আলহাজ্ব মো: সমির উদ্দিন</p>
+                      <p className="text-[9px] text-gray-400">রুট ডিস্ট্রিবিউশন অ্যান্ড হোলসেল পার্টনার, নেত্রকোনা</p>
+                      <p className="text-[9px] text-gray-400">মোবাইল: ০১৭১৫-XXXXXX, ০১৮১৯-XXXXXX</p>
+                      <div className="inline-block bg-slate-100 text-slate-800 font-bold px-2 py-0.5 rounded text-[8px] uppercase tracking-wider mt-1.5 font-sans">
+                        বিক্রয় ইনভয়েস মেমো (Sales Invoice Memo) - {idx + 1}/{data.invoices.length}
+                      </div>
+                    </div>
+
+                    {/* Structured Invoice View */}
+                    <div className="space-y-4 text-left">
+                      <div className="grid grid-cols-2 gap-2 text-[9px] text-gray-600 border-b pb-2">
+                        <div>
+                          <p><strong className="text-slate-900">মেমো নং:</strong> <span className="font-mono font-bold">{inv.invoiceNo || inv.id}</span></p>
+                          <p><strong className="text-slate-900">তারিখ:</strong> {inv.date}</p>
+                          <p><strong className="text-slate-900">রুট/এরিয়া:</strong> {inv.route || 'N/A'}</p>
+                        </div>
+                        <div className="text-right">
+                          <p><strong className="text-slate-900">গ্রাহক:</strong> {inv.shopName || 'Spot Client'}</p>
+                          <p><strong className="text-slate-900">মালিক:</strong> {inv.customerName || 'Spot Client'}</p>
+                          <p><strong className="text-slate-900">কোম্পানি:</strong> {inv.companyName || 'N/A'}</p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">পণ্য তালিকা ও বিল বিবরণী:</p>
+                        <table className="w-full text-left text-[9px] border-collapse">
+                          <thead>
+                            <tr className="border-b border-gray-200 bg-slate-50 text-gray-500 font-bold">
+                              <th className="py-1 px-1">আইটেম নাম</th>
+                              <th className="py-1 px-1 text-center">পরিমাণ</th>
+                              <th className="py-1 px-1 text-right">দর</th>
+                              <th className="py-1 px-1 text-right">মোট</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100 font-medium">
+                            {(inv.items || []).map((item: any, itemIdx: number) => (
+                              <tr key={itemIdx}>
+                                <td className="py-1 px-1 font-bold text-slate-800">{item.name}</td>
+                                <td className="py-1 px-1 text-center">{item.qty} পিস</td>
+                                <td className="py-1 px-1 text-right">৳{item.price}</td>
+                                <td className="py-1 px-1 text-right font-bold">৳{item.total?.toLocaleString()}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="border-t pt-2 text-[9px] font-bold space-y-1 text-right max-w-xs ml-auto">
+                        <div className="flex justify-between">
+                          <span className="text-gray-400">সাব-টোটাল:</span>
+                          <span>৳{inv.subTotal?.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between text-rose-600">
+                          <span>ডিসকাউন্ট:</span>
+                          <span>-৳{inv.discount?.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between border-t pt-1 text-slate-950 font-black">
+                          <span>সর্বমোট বিল:</span>
+                          <span>৳{inv.grandTotal?.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between text-emerald-700">
+                          <span>আজ নগদ জমা:</span>
+                          <span>৳{inv.paymentReceived?.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between border-t border-dashed pt-1 text-red-600 font-black">
+                          <span>বাকি/বকেয়া:</span>
+                          <span>৳{(inv.grandTotal - inv.paymentReceived)?.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Footer Signatures */}
+                    <div className="pt-10 border-t border-dashed border-gray-200 mt-12 grid grid-cols-2 gap-4 text-center text-[8px] font-bold text-gray-400">
+                      <div>
+                        <p className="border-t border-gray-300 pt-1 w-2/3 mx-auto">ক্রেতার স্বাক্ষর</p>
+                      </div>
+                      <div>
+                        <p className="border-t border-gray-300 pt-1 w-2/3 mx-auto">কর্তৃপক্ষের স্বাক্ষর</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
-            </div>
-
-            {/* Structured Invoice View */}
-            {type === 'invoice' && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-2 text-[9px] text-gray-600 border-b pb-2">
-                  <div>
-                    <p><strong className="text-slate-900">মেমো নং:</strong> <span className="font-mono font-bold">{data.invoiceNo || data.id}</span></p>
-                    <p><strong className="text-slate-900">তারিখ:</strong> {data.date}</p>
-                    <p><strong className="text-slate-900">রুট/এরিয়া:</strong> {data.route || 'N/A'}</p>
-                  </div>
-                  <div className="text-right">
-                    <p><strong className="text-slate-900">গ্রাহক:</strong> {data.shopName || 'Spot Client'}</p>
-                    <p><strong className="text-slate-900">মালিক:</strong> {data.customerName || 'Spot Client'}</p>
-                    <p><strong className="text-slate-900">কোম্পানি:</strong> {data.companyName || 'N/A'}</p>
+            ) : (
+              <>
+                {/* Header Brand */}
+                <div className="text-center space-y-1 mb-4 pb-3 border-b border-gray-200">
+                  <h2 className="text-base font-black text-slate-900 tracking-tight">সামীরা ট্রেডার্স (Samira Traders)</h2>
+                  <p className="text-[10px] text-gray-500 font-medium">প্রোপ্রাইটার: আলহাজ্ব মো: সমির উদ্দিন</p>
+                  <p className="text-[9px] text-gray-400">রুট ডিস্ট্রিবিউশন অ্যান্ড হোলসেল পার্টনার, নেত্রকোনা</p>
+                  <p className="text-[9px] text-gray-400">মোবাইল: ০১৭১৫-XXXXXX, ০১৮১৯-XXXXXX</p>
+                  <div className="inline-block bg-slate-100 text-slate-800 font-bold px-2 py-0.5 rounded text-[8px] uppercase tracking-wider mt-1.5 font-sans">
+                    {title}
                   </div>
                 </div>
 
-                <div className="space-y-1.5">
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">পণ্য তালিকা ও বিল বিবরণী:</p>
-                  <table className="w-full text-left text-[9px] border-collapse">
-                    <thead>
-                      <tr className="border-b border-gray-200 bg-slate-50 text-gray-500 font-bold">
-                        <th className="py-1 px-1">আইটেম নাম</th>
-                        <th className="py-1 px-1 text-center">পরিমাণ</th>
-                        <th className="py-1 px-1 text-right">দর</th>
-                        <th className="py-1 px-1 text-right">মোট</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100 font-medium">
-                      {(data.items || []).map((item: any, idx: number) => (
-                        <tr key={idx}>
-                          <td className="py-1 px-1 font-bold text-slate-800">{item.name}</td>
-                          <td className="py-1 px-1 text-center">{item.qty} পিস</td>
-                          <td className="py-1 px-1 text-right">৳{item.price}</td>
-                          <td className="py-1 px-1 text-right font-bold">৳{item.total?.toLocaleString()}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="border-t pt-2 text-[9px] font-bold space-y-1 text-right max-w-xs ml-auto">
-                  <div className="flex justify-between">
-                    <span className="text-gray-400">সাব-টোটাল:</span>
-                    <span>৳{data.subTotal?.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between text-rose-600">
-                    <span>ডিসকাউন্ট:</span>
-                    <span>-৳{data.discount?.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between border-t pt-1 text-slate-950 font-black">
-                    <span>সর্বমোট বিল:</span>
-                    <span>৳{data.grandTotal?.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between text-emerald-700">
-                    <span>আজ নগদ জমা:</span>
-                    <span>৳{data.paymentReceived?.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between border-t border-dashed pt-1 text-red-600 font-black">
-                    <span>বাকি/বকেয়া:</span>
-                    <span>৳{(data.grandTotal - data.paymentReceived)?.toLocaleString()}</span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Structured Settlement View */}
-            {type === 'settlement' && (
-              <div className="space-y-4 text-[9px]">
-                <div className="grid grid-cols-2 gap-2 text-gray-600 border-b pb-2">
-                  <div>
-                    <p><strong className="text-slate-900">সেটেলমেন্ট আইডি:</strong> <span className="font-mono font-bold">{data.id || 'N/A'}</span></p>
-                    <p><strong className="text-slate-900">তারিখ:</strong> {data.date || new Date().toISOString().split('T')[0]}</p>
-                  </div>
-                  <div className="text-right">
-                    <p><strong className="text-slate-900">ডিএসআর কর্মী:</strong> {data.dsrName || 'N/A'}</p>
-                    <p><strong className="text-slate-900">রুট/এরিয়া:</strong> {data.route || 'N/A'}</p>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="p-2.5 bg-slate-50 border rounded-xl grid grid-cols-2 gap-2">
-                    <div>
-                      <p className="text-gray-400">মোট ডেলিভারি কার্টন:</p>
-                      <p className="text-xs font-black text-slate-800">{data.totalCartons || 0} CTN</p>
+                {/* Structured Invoice View */}
+                {type === 'invoice' && (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-2 text-[9px] text-gray-600 border-b pb-2">
+                      <div>
+                        <p><strong className="text-slate-900">মেমো নং:</strong> <span className="font-mono font-bold">{data.invoiceNo || data.id}</span></p>
+                        <p><strong className="text-slate-900">তারিখ:</strong> {data.date}</p>
+                        <p><strong className="text-slate-900">রুট/এরিয়া:</strong> {data.route || 'N/A'}</p>
+                      </div>
+                      <div className="text-right">
+                        <p><strong className="text-slate-900">গ্রাহক:</strong> {data.shopName || 'Spot Client'}</p>
+                        <p><strong className="text-slate-900">মালিক:</strong> {data.customerName || 'Spot Client'}</p>
+                        <p><strong className="text-slate-900">কোম্পানি:</strong> {data.companyName || 'N/A'}</p>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <p className="text-gray-400">মোট বিক্রয় পরিমাণ:</p>
-                      <p className="text-xs font-black text-blue-700">৳{data.totalSales?.toLocaleString()}</p>
-                    </div>
-                  </div>
 
-                  <div className="p-2.5 bg-slate-50 border rounded-xl space-y-1.5 font-bold">
-                    <div className="flex justify-between text-slate-800">
-                      <span>আজকের মোট ক্যাশ আদায়:</span>
-                      <span className="text-emerald-700">৳{data.cashCollected?.toLocaleString()}</span>
+                    <div className="space-y-1.5">
+                      <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">পণ্য তালিকা ও বিল বিবরণী:</p>
+                      <table className="w-full text-left text-[9px] border-collapse">
+                        <thead>
+                          <tr className="border-b border-gray-200 bg-slate-50 text-gray-500 font-bold">
+                            <th className="py-1 px-1">আইটেম নাম</th>
+                            <th className="py-1 px-1 text-center">পরিমাণ</th>
+                            <th className="py-1 px-1 text-right">দর</th>
+                            <th className="py-1 px-1 text-right">মোট</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 font-medium">
+                          {(data.items || []).map((item: any, idx: number) => (
+                            <tr key={idx}>
+                              <td className="py-1 px-1 font-bold text-slate-800">{item.name}</td>
+                              <td className="py-1 px-1 text-center">{item.qty} পিস</td>
+                              <td className="py-1 px-1 text-right">৳{item.price}</td>
+                              <td className="py-1 px-1 text-right font-bold">৳{item.total?.toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
-                    <div className="flex justify-between text-slate-800">
-                      <span>মার্কেট বকেয়া (ক্রেডিট সেলস):</span>
-                      <span className="text-amber-600">৳{data.marketDues?.toLocaleString()}</span>
-                    </div>
-                    <div className="flex justify-between border-t border-dashed pt-1 text-slate-950">
-                      <span>আজকের শর্টেজ/ক্যাশ শর্ট:</span>
-                      <span className={data.shortageAmount > 0 ? 'text-red-600' : 'text-emerald-600'}>
-                        ৳{data.shortageAmount?.toLocaleString()}
-                      </span>
-                    </div>
-                  </div>
-                </div>
 
-                {data.remarks && (
-                  <div className="p-2 bg-slate-50 border rounded text-[8px] text-gray-500 italic">
-                    <strong>মন্তব্য:</strong> {data.remarks}
+                    <div className="border-t pt-2 text-[9px] font-bold space-y-1 text-right max-w-xs ml-auto">
+                      <div className="flex justify-between">
+                        <span className="text-gray-400">সাব-টোটাল:</span>
+                        <span>৳{data.subTotal?.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between text-rose-600">
+                        <span>ডিসকাউন্ট:</span>
+                        <span>-৳{data.discount?.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between border-t pt-1 text-slate-950 font-black">
+                        <span>সর্বমোট বিল:</span>
+                        <span>৳{data.grandTotal?.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between text-emerald-700">
+                        <span>আজ নগদ জমা:</span>
+                        <span>৳{data.paymentReceived?.toLocaleString()}</span>
+                      </div>
+                      <div className="flex justify-between border-t border-dashed pt-1 text-red-600 font-black">
+                        <span>বাকি/বকেয়া:</span>
+                        <span>৳{(data.grandTotal - data.paymentReceived)?.toLocaleString()}</span>
+                      </div>
+                    </div>
                   </div>
                 )}
-              </div>
-            )}
 
-            {/* Structured Ledger View */}
-            {type === 'ledger' && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-2 text-[9px] text-gray-600 border-b pb-2">
+                {/* Structured Settlement View */}
+                {type === 'settlement' && (
+                  <div className="space-y-4 text-[9px]">
+                    <div className="grid grid-cols-2 gap-2 text-gray-600 border-b pb-2">
+                      <div>
+                        <p><strong className="text-slate-900">সেটেলমেন্ট আইডি:</strong> <span className="font-mono font-bold">{data.id || 'N/A'}</span></p>
+                        <p><strong className="text-slate-900">তারিখ:</strong> {data.date || new Date().toISOString().split('T')[0]}</p>
+                      </div>
+                      <div className="text-right">
+                        <p><strong className="text-slate-900">ডিএসআর কর্মী:</strong> {data.dsrName || 'N/A'}</p>
+                        <p><strong className="text-slate-900">রুট/এরিয়া:</strong> {data.route || 'N/A'}</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="p-2.5 bg-slate-50 border rounded-xl grid grid-cols-2 gap-2">
+                        <div>
+                          <p className="text-gray-400">মোট ডেলিভারি কার্টন:</p>
+                          <p className="text-xs font-black text-slate-800">{data.totalCartons || 0} CTN</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-gray-400">মোট বিক্রয় পরিমাণ:</p>
+                          <p className="text-xs font-black text-blue-700">৳{data.totalSales?.toLocaleString()}</p>
+                        </div>
+                      </div>
+
+                      <div className="p-2.5 bg-slate-50 border rounded-xl space-y-1.5 font-bold">
+                        <div className="flex justify-between text-slate-800">
+                          <span>আজকের মোট ক্যাশ আদায়:</span>
+                          <span className="text-emerald-700">৳{data.cashCollected?.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between text-slate-800">
+                          <span>মার্কেট বকেয়া (ক্রেডিট সেলস):</span>
+                          <span className="text-amber-600">৳{data.marketDues?.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between border-t border-dashed pt-1 text-slate-950">
+                          <span>আজকের শর্টেজ/ক্যাশ শর্ট:</span>
+                          <span className={data.shortageAmount > 0 ? 'text-red-600' : 'text-emerald-600'}>
+                            ৳{data.shortageAmount?.toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {data.remarks && (
+                      <div className="p-2 bg-slate-50 border rounded text-[8px] text-gray-500 italic">
+                        <strong>মন্তব্য:</strong> {data.remarks}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Structured Ledger View */}
+                {type === 'ledger' && (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-2 text-[9px] text-gray-600 border-b pb-2">
+                      <div>
+                        <p><strong className="text-slate-900">আউটলেট নাম:</strong> {data.shopName || data.name}</p>
+                        <p><strong className="text-slate-900">মালিকের নাম:</strong> {data.name || 'N/A'}</p>
+                      </div>
+                      <div className="text-right">
+                        <p><strong className="text-slate-900">রুট/এরিয়া:</strong> {data.route || 'N/A'}</p>
+                        <p><strong className="text-slate-900">তারিখ:</strong> {new Date().toLocaleDateString()}</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">কোম্পানি ভিত্তিক বকেয়া খতিয়ান:</p>
+                      <table className="w-full text-left text-[9px] border-collapse">
+                        <thead>
+                          <tr className="border-b border-gray-200 bg-slate-50 text-gray-500 font-bold">
+                            <th className="py-1 px-1">কোম্পানি বিবরণ</th>
+                            <th className="py-1 px-1 text-right">বকেয়ার পরিমাণ</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 font-bold text-slate-800">
+                          {Object.entries(data.dues || {}).map(([cId, due]: any) => (
+                            <tr key={cId}>
+                              <td className="py-1 px-1 text-gray-500">কোম্পানি ID: {cId}</td>
+                              <td className="py-1 px-1 text-right text-amber-600">৳{due.toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="border-t pt-2 flex justify-between text-xs font-black text-slate-950">
+                      <span>সর্বমোট সমন্বিত বকেয়া:</span>
+                      <span>৳{data.totalDue?.toLocaleString()}</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Footer Signatures */}
+                <div className="pt-10 border-t border-dashed border-gray-200 mt-12 grid grid-cols-2 gap-4 text-center text-[8px] font-bold text-gray-400">
                   <div>
-                    <p><strong className="text-slate-900">আউটলেট নাম:</strong> {data.shopName || data.name}</p>
-                    <p><strong className="text-slate-900">মালিকের নাম:</strong> {data.name || 'N/A'}</p>
+                    <p className="border-t border-gray-300 pt-1 w-2/3 mx-auto">ক্রেতার স্বাক্ষর</p>
                   </div>
-                  <div className="text-right">
-                    <p><strong className="text-slate-900">রুট/এরিয়া:</strong> {data.route || 'N/A'}</p>
-                    <p><strong className="text-slate-900">তারিখ:</strong> {new Date().toLocaleDateString()}</p>
+                  <div>
+                    <p className="border-t border-gray-300 pt-1 w-2/3 mx-auto">কর্তৃপক্ষের স্বাক্ষর</p>
                   </div>
                 </div>
-
-                <div className="space-y-1.5">
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">কোম্পানি ভিত্তিক বকেয়া খতিয়ান:</p>
-                  <table className="w-full text-left text-[9px] border-collapse">
-                    <thead>
-                      <tr className="border-b border-gray-200 bg-slate-50 text-gray-500 font-bold">
-                        <th className="py-1 px-1">কোম্পানি বিবরণ</th>
-                        <th className="py-1 px-1 text-right">বকেয়ার পরিমাণ</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100 font-bold text-slate-800">
-                      {Object.entries(data.dues || {}).map(([cId, due]: any) => (
-                        <tr key={cId}>
-                          <td className="py-1 px-1 text-gray-500">কোম্পানি ID: {cId}</td>
-                          <td className="py-1 px-1 text-right text-amber-600">৳{due.toLocaleString()}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="border-t pt-2 flex justify-between text-xs font-black text-slate-950">
-                  <span>সর্বমোট সমন্বিত বকেয়া:</span>
-                  <span>৳{data.totalDue?.toLocaleString()}</span>
-                </div>
-              </div>
+              </>
             )}
-
-            {/* Footer Signatures */}
-            <div className="pt-10 border-t border-dashed border-gray-200 mt-12 grid grid-cols-2 gap-4 text-center text-[8px] font-bold text-gray-400">
-              <div>
-                <p className="border-t border-gray-300 pt-1 w-2/3 mx-auto">ক্রেতার স্বাক্ষর</p>
-              </div>
-              <div>
-                <p className="border-t border-gray-300 pt-1 w-2/3 mx-auto">কর্তৃপক্ষের স্বাক্ষর</p>
-              </div>
-            </div>
 
           </div>
 

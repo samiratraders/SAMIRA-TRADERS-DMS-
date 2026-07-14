@@ -5,7 +5,16 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      {
+        name: 'pwa-service-worker-config',
+        configResolved() {
+          console.log('⚡ [PWA-Config] Service Worker (sw.js) & Web App Manifest (manifest.json) mapped from public folder to dist.');
+        }
+      }
+    ],
     resolve: {
       alias: {
         '@': fileURLToPath(new URL('./src', import.meta.url)),

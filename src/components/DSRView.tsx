@@ -28,10 +28,57 @@ import {
   FileSpreadsheet,
   ArrowRightLeft
 } from 'lucide-react';
-import { collection, getDocs, doc, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { collection, getDocs, doc, setDoc, updateDoc, writeBatch, runTransaction } from 'firebase/firestore';
+import { db, auth } from '../lib/firebase';
 import { SalesInvoice, Customer, Product, UserProfile, UserRole } from '../types';
 import { logActivity } from '../lib/activityLogger';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth?.currentUser?.uid || null,
+      email: auth?.currentUser?.email || null,
+      emailVerified: auth?.currentUser?.emailVerified || null,
+      isAnonymous: auth?.currentUser?.isAnonymous || null,
+      tenantId: auth?.currentUser?.tenantId || null,
+      providerInfo: auth?.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error details: ', JSON.stringify(errInfo));
+  return new Error(JSON.stringify(errInfo));
+}
 
 // Extend types with local ones for DSR sheets
 export interface DSRSheetItem {
@@ -81,6 +128,33 @@ export default function DSRView() {
   const [invoices, setInvoices] = useState<SalesInvoice[]>([]);
   const [dsrUsers, setDsrUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Firestore Connection Diagnostic State
+  const [dbState, setDbState] = useState<{ status: 'idle' | 'checking' | 'connected' | 'error'; error?: string; latency?: number }>({ status: 'idle' });
+
+  const runDiagnostics = async (): Promise<boolean> => {
+    setDbState({ status: 'checking' });
+    const start = Date.now();
+    try {
+      console.log('DSR Desk: Executing Firestore diagnostic write test...');
+      const testDocRef = doc(db, 'connection_diagnostics', 'health_check_dsr');
+      await setDoc(testDocRef, {
+        lastChecked: new Date().toISOString(),
+        status: 'success',
+        clientTime: start
+      });
+      const latency = Date.now() - start;
+      console.log(`DSR Desk: Firestore diagnostic test write successful. Latency: ${latency}ms`);
+      setDbState({ status: 'connected', latency });
+      return true;
+    } catch (err: any) {
+      console.error('DSR Desk: Firestore connection diagnostic failed:', err);
+      const errMsg = err?.message || String(err);
+      setDbState({ status: 'error', error: errMsg });
+      return false;
+    }
+  };
 
   // View control
   const [activeSubTab, setActiveSubTab] = useState<'list' | 'create'>('list');
@@ -107,6 +181,11 @@ export default function DSRView() {
   ]);
   const [customerDues, setCustomerDues] = useState<Array<{ customerId: string; companyId: string; amount: number }>>([]);
   const [cashReceived, setCashReceived] = useState<number>(0);
+
+  // UI Confirmation, Validation and Firestore Error States
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [dbError, setDbError] = useState<string | null>(null);
 
   // Fetch all necessary data
   const loadData = async () => {
@@ -155,6 +234,7 @@ export default function DSRView() {
 
   useEffect(() => {
     loadData();
+    runDiagnostics();
   }, []);
 
   // Unique routes derived from customers
@@ -210,6 +290,14 @@ export default function DSRView() {
 
     try {
       setLoading(true);
+
+      // RUN PRE-FLIGHT FIREBASE CONNECTION DIAGNOSTIC (Non-blocking warning only)
+      console.log('DSR Desk: Running pre-flight Firestore connection diagnostics before creating DSR sheet...');
+      const isConnected = await runDiagnostics();
+      if (!isConnected) {
+        console.warn('Firestore connection check returned false. We will still proceed with creating the sheet as connection_diagnostics write might be blocked or delayed.');
+      }
+
       const sheetId = 'dsr-sheet-' + Date.now();
       const aggregatedProducts = getAggregatedProducts();
 
@@ -287,18 +375,23 @@ export default function DSRView() {
     ]);
     setCustomerDues([]);
     setCashReceived(0);
+    setValidationError(null);
+    setDbError(null);
   };
 
   // Helper to retrieve details of current sheet item
   const calculateItemSold = (productId: string, assignedUnits: number, rate: number, cartonSize: number) => {
     const ret = returnItems[productId] || { returnedCartons: 0, returnedPieces: 0 };
-    const returnedUnits = (Number(ret.returnedCartons) * cartonSize) + Number(ret.returnedPieces);
+    const returnedCartons = Number(ret.returnedCartons) || 0;
+    const returnedPieces = Number(ret.returnedPieces) || 0;
+    const cSize = Number(cartonSize) || 1;
+    const returnedUnits = (returnedCartons * cSize) + returnedPieces;
     const soldUnits = Math.max(0, assignedUnits - returnedUnits);
     const soldValue = soldUnits * rate;
 
     // Display values
-    const soldCartons = Math.floor(soldUnits / cartonSize);
-    const soldPieces = soldUnits % cartonSize;
+    const soldCartons = Math.floor(soldUnits / cSize);
+    const soldPieces = soldUnits % cSize;
 
     return {
       returnedUnits,
@@ -317,29 +410,29 @@ export default function DSRView() {
     let netSales = 0;
     selectedSheetForReturn.items.forEach(it => {
       const { soldValue } = calculateItemSold(it.productId, it.assignedUnits, it.rate, it.cartonSize);
-      netSales += soldValue;
+      netSales += Number(soldValue) || 0;
     });
 
     // 2. Damages
-    const totalDamage = damages.reduce((sum, d) => sum + (d.pieces * d.unitValue), 0);
+    const totalDamage = damages.reduce((sum, d) => sum + ((Number(d.pieces) || 0) * (Number(d.unitValue) || 0)), 0);
 
     // 3. Free Products
-    const totalFree = freeProducts.reduce((sum, f) => sum + (f.pieces * f.unitValue), 0);
+    const totalFree = freeProducts.reduce((sum, f) => sum + ((Number(f.pieces) || 0) * (Number(f.unitValue) || 0)), 0);
 
     // 4. Discounts
-    const totalDiscount = discounts.reduce((sum, d) => sum + d.amount, 0);
+    const totalDiscount = discounts.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
 
     // 5. Customer Dues
-    const totalCustomerDue = customerDues.reduce((sum, c) => sum + c.amount, 0);
+    const totalCustomerDue = customerDues.reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
 
     // 6. Expenses
-    const totalExpense = expenses.reduce((sum, e) => sum + Number(e.amount), 0);
+    const totalExpense = expenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
 
     // 7. Net Due DSR
     const netDueDsr = netSales - totalDamage - totalFree - totalDiscount - totalCustomerDue - totalExpense;
 
     // 8. Shortage
-    const shortage = netDueDsr - cashReceived;
+    const shortage = netDueDsr - (Number(cashReceived) || 0);
 
     return {
       netSales,
@@ -353,31 +446,72 @@ export default function DSRView() {
     };
   };
 
-  // Submit checkout/returns to Firestore and close sheet
+  // Validate checkout/returns inputs and open verification modal
   const handleSubmitReturns = async () => {
     if (!selectedSheetForReturn) return;
 
-    if (!window.confirm('আপনি কি হিসাব ক্লোজ করে রিটার্ন সাবমিট করতে চান? (Are you sure you want to close this load sheet?)')) {
+    // Clear old errors
+    setValidationError(null);
+    setDbError(null);
+
+    // 1. Validations
+    if (cashReceived < 0 || isNaN(cashReceived)) {
+      setValidationError('ভুল ইনপুট: নগদ জমা টাকার পরিমাণ অবশ্যই সঠিক এবং অ-ঋণাত্মক হতে হবে! (Validation Error: Cash received must be a valid, non-negative number!)');
       return;
     }
 
+    let hasValidationError = false;
+    let validationErrorMessage = '';
+
+    for (const it of selectedSheetForReturn.items) {
+      const { returnedUnits } = calculateItemSold(it.productId, it.assignedUnits, it.rate, it.cartonSize);
+      if (returnedUnits < 0) {
+        hasValidationError = true;
+        validationErrorMessage = `ভুল ইনপুট: "${it.name}" এর ফিরতি প্রোডাক্টের সংখ্যা ঋণাত্মক হতে পারে না! (Validation Error: Returned units for "${it.name}" cannot be negative!)`;
+        break;
+      }
+      if (returnedUnits > it.assignedUnits) {
+        hasValidationError = true;
+        validationErrorMessage = `ভুল ইনপুট: "${it.name}" এর ফিরতি প্রোডাক্টের মোট পরিমাণ সকালে লোডকৃত পরিমাণের চেয়ে বেশি হতে পারে না! (Validation Error: Returned units for "${it.name}" cannot exceed morning loaded units!) [লোডকৃত: ${it.assignedUnits}, ফেরত: ${returnedUnits}]`;
+        break;
+      }
+    }
+
+    if (hasValidationError) {
+      setValidationError(validationErrorMessage);
+      return;
+    }
+
+    // Trigger custom confirmation modal (bypassing blocking window.confirm)
+    setShowConfirmModal(true);
+  };
+
+  // Safe Transaction Executor to save afternoon checkout returns to Firestore
+  const executeSubmitReturns = async () => {
+    if (!selectedSheetForReturn) return;
+    if (isSubmitting) return;
+
+    setShowConfirmModal(false);
+    setValidationError(null);
+    setDbError(null);
+
     try {
+      setIsSubmitting(true);
       setLoading(true);
-      const batch = writeBatch(db);
+
+      // RUN PRE-FLIGHT FIREBASE CONNECTION DIAGNOSTIC (Non-blocking warning only)
+      console.log('DSR Desk: Running pre-flight Firestore connection diagnostics before submitting returns...');
+      const isConnected = await runDiagnostics();
+      if (!isConnected) {
+        console.warn('Firestore connection check returned false. We will still proceed with writing data as connection_diagnostics write might be blocked or delayed.');
+      }
+
+      console.log('Starting DSR Afternoon Return submission...');
+      console.log('Selected Sheet For Return:', selectedSheetForReturn);
+      
       const { netSales, totalDamage, totalFree, totalDiscount, totalCustomerDue, totalExpense, netDueDsr, shortage } = getReconciliationTotals();
-
-      // 1. Update DSR Sheet Status & items and reconciliation object
-      const updatedItems = selectedSheetForReturn.items.map(it => {
-        const { returnedUnits, soldUnits, soldValue } = calculateItemSold(it.productId, it.assignedUnits, it.rate, it.cartonSize);
-        return {
-          ...it,
-          returnedUnits,
-          soldUnits,
-          totalAmount: soldValue
-        };
-      });
-
-      const reconciliationObj = {
+      
+      console.log('Reconciliation Totals Calculated:', {
         netSales,
         totalDamage,
         totalFree,
@@ -385,52 +519,193 @@ export default function DSRView() {
         totalCustomerDue,
         totalExpense,
         netDueDsr,
-        cashReceived,
         shortage,
-        damages: damages.map(d => ({ ...d, totalValue: d.pieces * d.unitValue })),
-        freeProducts: freeProducts.map(f => ({ ...f, totalValue: f.pieces * f.unitValue })),
-        discounts,
-        expenses,
-        customerDues: customerDues.map(c => {
-          const cust = customers.find(custObj => custObj.id === c.customerId);
-          return {
-            customerId: c.customerId,
-            customerName: cust?.name || 'Unknown',
-            shopName: cust?.shopName || 'Unknown',
-            companyId: c.companyId,
-            companyName: 'Samira Traders',
-            amount: c.amount
-          };
-        })
-      };
-
-      const sheetRef = doc(db, 'dsrSheets', selectedSheetForReturn.id);
-      batch.update(sheetRef, {
-        status: 'submitted_by_dsr',
-        closedAt: new Date().toISOString(),
-        items: updatedItems,
-        reconciliation: reconciliationObj
+        cashReceived
       });
 
-      await batch.commit();
+      // We perform all Firestore reads first, then perform all writes/updates in the transaction
+      await runTransaction(db, async (transaction) => {
+        // --- 1. READ PHASE (All reads must precede writes in a Firestore transaction) ---
+
+        // A. Read the current DSR sheet doc to ensure status is still 'assigned'
+        const sheetRef = doc(db, 'dsrSheets', selectedSheetForReturn.id);
+        const sheetSnap = await transaction.get(sheetRef);
+        if (!sheetSnap.exists()) {
+          throw new Error('লোডশীটটি ডাটাবেজে পাওয়া যায়নি! (DSR load sheet not found in the database!)');
+        }
+        const currentSheetStatus = sheetSnap.data()?.status;
+        if (currentSheetStatus !== 'assigned') {
+          throw new Error(`লোডশীটটির হিসাব ইতিমধ্যে সম্পন্ন করা হয়েছে! বর্তমান স্ট্যাটাস: ${currentSheetStatus} (DSR load sheet has already been settled! Current status: ${currentSheetStatus})`);
+        }
+
+        // B. Read all Product documents
+        const productRefs = selectedSheetForReturn.items.map(it => doc(db, 'products', it.productId));
+        const productSnaps = await Promise.all(productRefs.map(ref => transaction.get(ref)));
+
+        // C. Read DSR user profile document (if there's shortage)
+        let dsrUserSnap = null;
+        if (shortage > 0) {
+          const dsrUserRef = doc(db, 'users', selectedSheetForReturn.dsrId);
+          dsrUserSnap = await transaction.get(dsrUserRef);
+        }
+
+        // --- 2. WRITE/UPDATE PHASE (All writes/updates must follow reads) ---
+
+        // A. Prepare updatedItems and update Product Stocks and write Inventory Ledger
+        const updatedItems = selectedSheetForReturn.items.map(it => {
+          const { returnedUnits, soldUnits, soldValue } = calculateItemSold(it.productId, it.assignedUnits, it.rate, it.cartonSize);
+          return {
+            ...it,
+            returnedUnits,
+            soldUnits,
+            totalAmount: soldValue
+          };
+        });
+
+        selectedSheetForReturn.items.forEach((it, index) => {
+          const { returnedUnits, soldUnits } = calculateItemSold(it.productId, it.assignedUnits, it.rate, it.cartonSize);
+          const snap = productSnaps[index];
+          const damagePieces = damages.find(d => d.productId === it.productId)?.pieces || 0;
+
+          if (snap && snap.exists()) {
+            const prodData = snap.data();
+            const currentStock = prodData.stockCount || 0;
+            const currentDamageStock = prodData.damageStock || 0;
+
+            const newStockCount = currentStock + returnedUnits;
+            const newDamageStockCount = currentDamageStock + damagePieces;
+
+            const originalHistory = prodData.history || [];
+            const updatedHistory = [
+              ...originalHistory,
+              {
+                date: selectedSheetForReturn.date,
+                action: 'DSR_CHECKOUT',
+                user: selectedSheetForReturn.dsrName,
+                details: `DSR afternoon checkout: Sold ${soldUnits} units, Fresh Returned ${returnedUnits} units, Damage Returned ${damagePieces} units.`
+              }
+            ];
+
+            // Transaction update product
+            transaction.update(doc(db, 'products', it.productId), {
+              stockCount: newStockCount,
+              damageStock: newDamageStockCount,
+              history: updatedHistory
+            });
+
+            // Transaction write Inventory Ledger
+            const inventoryLedgerId = `inv-ledger-${selectedSheetForReturn.id}-${it.productId}-${Date.now()}`;
+            transaction.set(doc(db, 'inventoryLedgers', inventoryLedgerId), {
+              id: inventoryLedgerId,
+              productId: it.productId,
+              productName: it.name,
+              type: 'DSR_CHECKOUT',
+              referenceId: selectedSheetForReturn.id,
+              referenceNo: `DSR-${selectedSheetForReturn.id.slice(-5).toUpperCase()}`,
+              date: selectedSheetForReturn.date,
+              assignedQty: it.assignedUnits,
+              returnedFreshQty: returnedUnits,
+              returnedDamageQty: damagePieces,
+              soldQty: soldUnits,
+              balanceAfter: newStockCount,
+              remarks: `DSR afternoon checkout for DSR "${selectedSheetForReturn.dsrName}". Route: ${selectedSheetForReturn.route}.`,
+              createdAt: new Date().toISOString()
+            });
+          }
+        });
+
+        // B. Update DSR Ledger (staffLedgers) & User shortage profile if shortage exists
+        if (shortage > 0) {
+          const shortageEntryId = `ledger-dsr-short-${selectedSheetForReturn.id}-${Date.now()}`;
+          transaction.set(doc(db, 'staffLedgers', shortageEntryId), {
+            id: shortageEntryId,
+            staffId: selectedSheetForReturn.dsrId,
+            staffName: selectedSheetForReturn.dsrName,
+            staffRole: 'DSR',
+            type: 'SHORTAGE',
+            referenceId: selectedSheetForReturn.id,
+            referenceNo: `DSR-${selectedSheetForReturn.id.slice(-5).toUpperCase()}`,
+            date: selectedSheetForReturn.date,
+            amount: shortage,
+            balanceAfter: shortage,
+            remarks: `DSR Route Shortage recorded from DSR Route ${selectedSheetForReturn.route} checkout (submitted).`,
+            createdAt: new Date().toISOString()
+          });
+
+          if (dsrUserSnap && dsrUserSnap.exists()) {
+            const prevShortage = dsrUserSnap.data()?.outstandingShortage || 0;
+            transaction.update(doc(db, 'users', selectedSheetForReturn.dsrId), {
+              outstandingShortage: prevShortage + shortage
+            });
+          }
+        }
+
+        // C. Update the DSR Sheet Document
+        const reconciliationObj = {
+          netSales,
+          totalDamage,
+          totalFree,
+          totalDiscount,
+          totalCustomerDue,
+          totalExpense,
+          netDueDsr,
+          cashReceived,
+          shortage,
+          damages: damages.map(d => ({ ...d, totalValue: d.pieces * d.unitValue })),
+          freeProducts: freeProducts.map(f => ({ ...f, totalValue: f.pieces * f.unitValue })),
+          discounts,
+          expenses,
+          customerDues: customerDues.map(c => {
+            const cust = customers.find(custObj => custObj.id === c.customerId);
+            const firstInvoice = invoices.find(inv => selectedSheetForReturn?.invoiceIds?.includes(inv.id));
+            const compId = firstInvoice?.companyId || c.companyId || '';
+            const compName = firstInvoice?.companyName || 'Samira Traders';
+            return {
+              customerId: c.customerId,
+              customerName: cust?.name || 'Unknown',
+              shopName: cust?.shopName || 'Unknown',
+              companyId: compId,
+              companyName: compName,
+              amount: c.amount
+            };
+          })
+        };
+
+        transaction.update(sheetRef, {
+          status: 'submitted_by_dsr',
+          closedAt: new Date().toISOString(),
+          items: updatedItems,
+          reconciliation: reconciliationObj,
+          stockAdjusted: true,       // Guards against double-deduction during Admin Approval
+          shortageLogged: shortage > 0 // Guards against duplicate shortages during Admin Approval
+        });
+      });
+
+      console.log('Transaction successfully executed!');
 
       // Log completion activity
+      console.log('Writing Activity Audit Log...');
+      const currentUid = auth?.currentUser?.uid || 'system_admin';
+      const currentName = auth?.currentUser?.displayName || auth?.currentUser?.email || 'DSR / Manager';
       await logActivity(
-        'system_admin',
-        'DSR / Manager',
+        currentUid,
+        currentName,
         UserRole.MANAGER,
         'PAYMENT_ENTRY',
         `Submitted Route Load Sheet for DSR "${selectedSheetForReturn.dsrName}". Total Sales: ৳${netSales}, Cash Received: ৳${cashReceived}, Shortage: ৳${shortage}. Pending approval.`,
         { sheetId: selectedSheetForReturn.id, shortage, cashReceived }
       );
 
-      alert('হিসাব দাখিল করা হয়েছে! ম্যানেজার যাচাইয়ের পর এডমিন চূড়ান্ত অনুমোদন দিলে ইনভেন্টরি ও খতিয়ান আপডেট হবে। (DSR afternoon checkout has been submitted! Inventory and ledgers will update upon Admin approval.)');
+      alert(`সাফল্য: রিটার্ন ও হিসাব সফলভাবে সম্পন্ন এবং সংরক্ষণ করা হয়েছে!\n(Success: Return and afternoon checkout successfully submitted and saved to Firestore!)\n\n• ফ্রেশ রিটার্ন স্টক গুদামে যুক্ত করা হয়েছে।\n• ড্যামেজ রিটার্ন স্টক ড্যামেজ গুদামে যুক্ত করা হয়েছে।\n• ডিএসআর লেজার এবং ইনভেন্টরি লেজার আপডেট করা হয়েছে।`);
       setSelectedSheetForReturn(null);
       loadData();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error submitting DSR afternoon returns:', err);
-      alert('রিটার্ন সাবমিট করতে সমস্যা হয়েছে। দয়া করে ইন্টারনেট কানেকশন চেক করুন।');
+      const wrappedError = handleFirestoreError(err, OperationType.WRITE, `dsrSheets/${selectedSheetForReturn?.id}`);
+      setDbError(err.message || String(err));
+      alert(`ডাটাবেজ ত্রুটি: রিটার্ন সংরক্ষণ করতে ব্যর্থ হয়েছে।\n(Database Error: Failed to save returns to Firestore.)\n\nত্রুটির বিবরণ (Details): ${err.message || err}`);
     } finally {
+      setIsSubmitting(false);
       setLoading(false);
     }
   };
@@ -470,6 +745,48 @@ export default function DSRView() {
             </button>
           </div>
         )}
+      </div>
+
+      {/* Database Diagnostic Notification Bar */}
+      <div className={`p-4 rounded-2xl border transition-all flex flex-col md:flex-row md:items-center justify-between gap-3 ${
+        dbState.status === 'connected' ? 'bg-emerald-50/55 border-emerald-200 text-emerald-800' :
+        dbState.status === 'error' ? 'bg-rose-50 border-rose-200 text-rose-800 animate-pulse' :
+        'bg-slate-50 border-slate-200 text-slate-700'
+      }`} id="firestore-connection-diagnostic-banner-dsr">
+        <div className="flex items-center space-x-2.5">
+          {dbState.status === 'connected' && (
+            <CheckCircle className="w-5 h-5 text-emerald-600 flex-shrink-0" />
+          )}
+          {dbState.status === 'error' && (
+            <AlertTriangle className="w-5 h-5 text-rose-600 flex-shrink-0" />
+          )}
+          {(dbState.status === 'checking' || dbState.status === 'idle') && (
+            <RefreshCw className="w-5 h-5 text-blue-500 animate-spin flex-shrink-0" />
+          )}
+          <div>
+            <h4 className="text-xs font-extrabold uppercase tracking-wide">
+              {dbState.status === 'connected' ? 'ডাটাবেজ সংযোগ সচল ও রাইট পারমিশন ভেরিফাইড (Firestore Ready)' :
+               dbState.status === 'error' ? 'ডাটাবেজ সংযোগ ত্রুটি! লেনদেন ব্লকড (Firestore Disconnected)' :
+               'ডাটাবেজ সংযোগ পরীক্ষা করা হচ্ছে... (Testing Firestore Write Connection...)'}
+            </h4>
+            <p className="text-[11px] opacity-90 mt-0.5">
+              {dbState.status === 'connected' && `ডাটাবেজ সফলভাবে রেসপন্স করেছে। লেটেন্সি: ${dbState.latency}ms। আপনার সব জটিল পোস্টিং সুরক্ষিত ও ইনস্ট্যান্টলি সংরক্ষিত হবে।`}
+              {dbState.status === 'error' && `সতর্কতা: নেটওয়ার্ক বা সিকিউরিটি রুল ব্লক রয়েছে! ত্রুটি: ${dbState.error || 'Firestore write permission blocked.'}`}
+              {dbState.status === 'checking' && 'ফায়ারস্টোর ডাটাবেজে একটি টেস্ট ডাটা রাইট করে কানেক্টিভিটি ও রাইট পারমিশন যাচাই করা হচ্ছে...'}
+              {dbState.status === 'idle' && 'ডাটাবেজ সংযোগ এখনো পরীক্ষা করা হয়নি।'}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center space-x-2">
+          <button
+            type="button"
+            onClick={runDiagnostics}
+            disabled={dbState.status === 'checking'}
+            className="px-3.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 font-bold text-[10px] rounded-lg border border-slate-200 hover:border-slate-300 shadow-sm cursor-pointer transition-all disabled:opacity-50"
+          >
+            {dbState.status === 'checking' ? 'যাচাই হচ্ছে...' : 'কানেকশন টেস্ট করুন (Ping DB)'}
+          </button>
+        </div>
       </div>
 
       {loading && (
@@ -959,12 +1276,47 @@ export default function DSRView() {
 
                 </div>
 
+                {/* Clear validation or db error displays to prevent silent failures */}
+                {validationError && (
+                  <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs p-3 rounded-xl flex items-start space-x-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold text-rose-800">যাচাইকরণ ত্রুটি (Validation Error):</p>
+                      <p className="mt-0.5 font-medium">{validationError}</p>
+                    </div>
+                  </div>
+                )}
+
+                {dbError && (
+                  <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs p-3 rounded-xl flex items-start space-x-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold text-rose-800">ডাটাবেজ ত্রুটি (Firestore Error):</p>
+                      <p className="mt-0.5 font-mono">{dbError}</p>
+                    </div>
+                  </div>
+                )}
+
                 <button
+                  type="button"
                   onClick={handleSubmitReturns}
-                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-xl text-xs transition-all flex items-center justify-center space-x-2 shadow-lg shadow-emerald-950/20 cursor-pointer"
+                  disabled={isSubmitting}
+                  className={`w-full font-bold py-3.5 rounded-xl text-xs transition-all flex items-center justify-center space-x-2 shadow-lg ${
+                    isSubmitting
+                      ? 'bg-emerald-400 cursor-not-allowed text-emerald-100 shadow-none'
+                      : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-950/20 cursor-pointer'
+                  }`}
                 >
-                  <CheckCircle className="w-4 h-4" />
-                  <span>রিটার্ন সাবমিট ও হিসাব মিলান (Submit & Close)</span>
+                  {isSubmitting ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <CheckCircle className="w-4 h-4" />
+                  )}
+                  <span>
+                    {isSubmitting 
+                      ? 'সাবমিট হচ্ছে, দয়া করে অপেক্ষা করুন...' 
+                      : 'রিটার্ন সাবমিট ও হিসাব মিলান (Submit & Close)'}
+                  </span>
                 </button>
 
               </div>
@@ -972,6 +1324,66 @@ export default function DSRView() {
             </div>
 
           </div>
+
+          {/* Custom Confirmation Modal inside iframe-safe view */}
+          {showConfirmModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+              <div className="bg-white rounded-3xl p-6 max-w-md w-full border border-gray-100 shadow-2xl space-y-5">
+                <div className="flex items-start space-x-3 text-amber-600">
+                  <div className="p-2 bg-amber-50 rounded-xl shrink-0">
+                    <AlertTriangle className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-800">আপনি কি নিশ্চিতভাবে হিসাব মিলকরণ সাবমিট করতে চান?</h3>
+                    <p className="text-[11px] text-slate-500 mt-1">Are you sure you want to close this load sheet and submit afternoon returns? This will update warehouse stocks, DSR ledger, and inventory records.</p>
+                  </div>
+                </div>
+
+                <div className="bg-slate-50 p-4 rounded-2xl border border-gray-100 space-y-2 text-xs font-mono">
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">ডিএসআর (DSR Name):</span>
+                    <span className="font-bold text-slate-800">{selectedSheetForReturn.dsrName}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">রুট (Route):</span>
+                    <span className="font-bold text-slate-800">{selectedSheetForReturn.route}</span>
+                  </div>
+                  <div className="flex justify-between border-t border-dashed pt-1.5 mt-1.5">
+                    <span className="text-gray-500">মোট বিক্রি (Net Sales):</span>
+                    <span className="font-bold text-emerald-600">৳{getReconciliationTotals().netSales.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">জমাকৃত নগদ (Cash Received):</span>
+                    <span className="font-bold text-blue-600">৳{cashReceived.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between border-t border-dashed pt-1.5 mt-1.5">
+                    <span className="text-gray-500">ঘাটতি / বাকী (Shortage):</span>
+                    <span className={`font-bold ${getReconciliationTotals().shortage > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                      ৳{getReconciliationTotals().shortage.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmModal(false)}
+                    className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 rounded-xl text-xs transition-all cursor-pointer border border-slate-200/50"
+                  >
+                    বাতিল করুন (Cancel)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={executeSubmitReturns}
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 rounded-xl text-xs transition-all cursor-pointer shadow-lg shadow-emerald-500/20"
+                  >
+                    হ্যাঁ, সাবমিট করুন (Yes, Submit)
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
         </div>
       )}
 

@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@variant dark (&:where(.dark, .dark *));
+
 @media print {
   aside,
   nav,
@@ -26,5 +28,14 @@
   * {
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
+  }
+}
+
+@keyframes scan {
+  0%, 100% {
+    transform: translateY(-110px);
+  }
+  50% {
+    transform: translateY(110px);
   }
 }

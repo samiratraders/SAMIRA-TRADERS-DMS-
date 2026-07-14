@@ -17,12 +17,14 @@ import {
   CheckCircle,
   RefreshCw,
   Eye,
-  Route
+  Route,
+  Printer
 } from 'lucide-react';
 import { collection, getDocs, doc, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { SalesInvoice, Customer, Company, Product, InvoiceItem, UserRole } from '../types';
 import { logActivity } from '../lib/activityLogger';
+import PrintWrapper from './PrintWrapper';
 
 interface SalesInvoiceViewProps {
   userRole: UserRole;
@@ -37,9 +39,22 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
   const [products, setProducts] = useState<Product[]>([]);
   
   const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState(() => {
+    const globalSearch = sessionStorage.getItem('dms_global_search_term');
+    if (globalSearch) {
+      sessionStorage.removeItem('dms_global_search_term');
+      return globalSearch;
+    }
+    return '';
+  });
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<SalesInvoice | null>(null);
+
+  // Print Wrapper States
+  const [showPrintModal, setShowPrintModal] = useState(false);
+  const [printData, setPrintData] = useState<any>(null);
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<string[]>([]);
 
   // New Invoice Form
   const [customerId, setCustomerId] = useState('');
@@ -50,6 +65,86 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
   const [discount, setDiscount] = useState<number>(0);
   const [paymentReceived, setPaymentReceived] = useState<number>(0);
   const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'MOBILE_BANKING' | 'CHEQUE' | 'DUE'>('CASH');
+
+  // Auto-save states
+  const [hasAutosavedDraft, setHasAutosavedDraft] = useState(false);
+  const [lastSavedTime, setLastSavedTime] = useState<string | null>(null);
+  const [isFlashActive, setIsFlashActive] = useState(false);
+
+  // Check for auto-saved draft when modal opens
+  useEffect(() => {
+    if (isAddModalOpen) {
+      const saved = localStorage.getItem('dms_autosave_sales_invoice');
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed.customerId || parsed.selectedRoute || parsed.companyId || (parsed.items && parsed.items.length > 0)) {
+            setHasAutosavedDraft(true);
+          }
+        } catch (e) {
+          console.error("Failed to parse auto-saved sales draft", e);
+        }
+      }
+    } else {
+      setHasAutosavedDraft(false);
+    }
+  }, [isAddModalOpen]);
+
+  // Periodic auto-save effect
+  useEffect(() => {
+    if (!isAddModalOpen) return;
+
+    const interval = setInterval(() => {
+      const draft = {
+        customerId,
+        selectedRoute,
+        companyId,
+        invoiceDate,
+        items,
+        discount,
+        paymentReceived,
+        paymentMethod
+      };
+
+      if (customerId || selectedRoute || companyId || items.length > 0 || discount > 0 || paymentReceived > 0) {
+        localStorage.setItem('dms_autosave_sales_invoice', JSON.stringify(draft));
+        const now = new Date().toLocaleTimeString();
+        setLastSavedTime(now);
+        setIsFlashActive(true);
+        setTimeout(() => setIsFlashActive(false), 2000);
+        console.log(`[Auto-Save] Sales invoice form saved at ${now}`);
+      }
+    }, 30000); // every 30s
+
+    return () => clearInterval(interval);
+  }, [isAddModalOpen, customerId, selectedRoute, companyId, invoiceDate, items, discount, paymentReceived, paymentMethod]);
+
+  const handleRestoreDraft = () => {
+    const saved = localStorage.getItem('dms_autosave_sales_invoice');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed.customerId !== undefined) setCustomerId(parsed.customerId);
+        if (parsed.selectedRoute !== undefined) setSelectedRoute(parsed.selectedRoute);
+        if (parsed.companyId !== undefined) setCompanyId(parsed.companyId);
+        if (parsed.invoiceDate !== undefined) setInvoiceDate(parsed.invoiceDate);
+        if (parsed.items !== undefined) setItems(parsed.items);
+        if (parsed.discount !== undefined) setDiscount(parsed.discount);
+        if (parsed.paymentReceived !== undefined) setPaymentReceived(parsed.paymentReceived);
+        if (parsed.paymentMethod !== undefined) setPaymentMethod(parsed.paymentMethod);
+
+        setHasAutosavedDraft(false);
+        alert('Invoice draft restored successfully! (ইনভয়েস ড্রাফট সফলভাবে পুনরুদ্ধার করা হয়েছে)');
+      } catch (e) {
+        console.error("Failed to restore invoice draft", e);
+      }
+    }
+  };
+
+  const handleDiscardDraft = () => {
+    localStorage.removeItem('dms_autosave_sales_invoice');
+    setHasAutosavedDraft(false);
+  };
 
   // Single item adder state
   const [currentProductId, setCurrentProductId] = useState('');
@@ -282,6 +377,7 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
         { invoiceId, invoiceNo, grandTotal, customerId: customerId || 'walk-in', companyId }
       );
 
+      localStorage.removeItem('dms_autosave_sales_invoice');
       setIsAddModalOpen(false);
       loadData();
     } catch (err) {
@@ -327,51 +423,185 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
           <p className="text-xs text-gray-400 mt-1">Click the top-right button to generate your first distribution sales bill.</p>
         </div>
       ) : (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden" id="sales-table-container">
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left">
-              <thead>
-                <tr className="bg-slate-50 text-slate-400 uppercase text-[10px] font-bold tracking-wider border-b border-gray-100">
-                  <th className="px-6 py-4">Invoice No</th>
-                  <th className="px-6 py-4">Outlet / Shop Name</th>
-                  <th className="px-6 py-4">Brand / Company</th>
-                  <th className="px-6 py-4 text-right">Bill Value</th>
-                  <th className="px-6 py-4 text-center">Status</th>
-                  <th className="px-6 py-4 text-center">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 text-sm">
-                {invoices.map((inv) => (
-                  <tr key={inv.id} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="px-6 py-4 font-bold text-blue-700 font-mono">{inv.invoiceNo}</td>
-                    <td className="px-6 py-4">
-                      <p className="font-semibold text-gray-950">{inv.shopName}</p>
-                      <p className="text-[10px] text-gray-400">{inv.route} • {inv.date}</p>
-                    </td>
-                    <td className="px-6 py-4 text-gray-500 font-medium">{inv.companyName}</td>
-                    <td className="px-6 py-4 text-right font-black text-gray-950">৳{inv.grandTotal.toLocaleString()}</td>
-                    <td className="px-6 py-4 text-center">
-                      <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-bold ${
-                        inv.status === 'PAID' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' :
-                        inv.status === 'PARTIAL' ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-rose-50 text-rose-700 border border-rose-100'
-                      }`}>
-                        {inv.status}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      <button
-                        onClick={() => handleViewInvoiceDetails(inv)}
-                        className="text-blue-600 hover:text-blue-800 p-1.5 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
-                        title="View Detailed Invoice"
-                      >
-                        <Eye className="w-4 h-4 mx-auto" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <div className="space-y-4">
+          {/* Quick Search Filtering Bar */}
+          <div className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm flex items-center space-x-3">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-gray-400 absolute left-3 top-3.5" />
+              <input
+                type="text"
+                placeholder="মেমো নং, দোকান বা কোম্পানির নাম দিয়ে ইনভয়েস খুঁজুন (Search by Invoice No, shop name or company...)"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                id="input-sales-search"
+                className="w-full bg-slate-50 border border-slate-200 text-slate-800 placeholder-gray-400 pl-10 pr-4 py-2.5 rounded-xl text-xs focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-semibold"
+              />
+              {searchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setSearchTerm('')}
+                  className="absolute right-3 top-2.5 text-gray-400 hover:text-gray-600 font-bold text-xs cursor-pointer"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
           </div>
+
+          {(() => {
+            const filteredInvoices = invoices.filter(inv => {
+              const term = searchTerm.toLowerCase();
+              return (
+                inv.invoiceNo.toLowerCase().includes(term) ||
+                inv.shopName.toLowerCase().includes(term) ||
+                inv.companyName.toLowerCase().includes(term) ||
+                (inv.route && inv.route.toLowerCase().includes(term)) ||
+                (inv.customerName && inv.customerName.toLowerCase().includes(term))
+              );
+            });
+
+            if (filteredInvoices.length === 0) {
+              return (
+                <div className="text-center py-12 bg-white rounded-2xl border border-gray-100 shadow-sm">
+                  <p className="text-sm font-semibold text-gray-600">কোনো মেলানো ইনভয়েস পাওয়া যায়নি (No matching invoices found)</p>
+                  <p className="text-xs text-gray-400 mt-1">অনুগ্রহ করে অন্য কীওয়ার্ড দিয়ে চেষ্টা করুন। (Try checking spelling or use a different search keyword.)</p>
+                </div>
+              );
+            }
+
+            return (
+              <div className="space-y-4">
+                {/* Bulk actions panel */}
+                {selectedInvoiceIds.length > 0 && (
+                  <div className="bg-blue-50 border border-blue-100 p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 animate-fadeIn">
+                    <div className="flex items-center space-x-2.5">
+                      <div className="bg-blue-600 text-white rounded-full w-6 h-6 flex items-center justify-center font-bold text-xs">
+                        {selectedInvoiceIds.length}
+                      </div>
+                      <span className="text-xs font-bold text-blue-800">
+                        ইনভয়েস নির্বাচন করা হয়েছে (Invoices selected for bulk action)
+                      </span>
+                    </div>
+                    <div className="flex items-center space-x-3">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedInvoiceIds([])}
+                        className="px-3.5 py-2 bg-white hover:bg-slate-50 border border-blue-200 text-slate-700 text-xs font-bold rounded-xl cursor-pointer transition-colors"
+                      >
+                        Clear Selection
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const selectedInvs = invoices.filter(inv => selectedInvoiceIds.includes(inv.id));
+                          setPrintData({ invoices: selectedInvs });
+                          setShowPrintModal(true);
+                        }}
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black rounded-xl cursor-pointer transition-colors flex items-center space-x-2 shadow-sm"
+                      >
+                        <Printer className="w-4 h-4" />
+                        <span>Bulk Print Selected (বাল্ক প্রিন্ট)</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden" id="sales-table-container">
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse text-left">
+                      <thead>
+                        <tr className="bg-slate-50 text-slate-400 uppercase text-[10px] font-bold tracking-wider border-b border-gray-100">
+                          <th className="px-4 py-4 text-center w-12">
+                            <input
+                              type="checkbox"
+                              checked={filteredInvoices.length > 0 && filteredInvoices.every(inv => selectedInvoiceIds.includes(inv.id))}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  const newSelections = [...selectedInvoiceIds];
+                                  filteredInvoices.forEach(inv => {
+                                    if (!newSelections.includes(inv.id)) {
+                                      newSelections.push(inv.id);
+                                    }
+                                  });
+                                  setSelectedInvoiceIds(newSelections);
+                                } else {
+                                  const filteredIds = filteredInvoices.map(inv => inv.id);
+                                  setSelectedInvoiceIds(selectedInvoiceIds.filter(id => !filteredIds.includes(id)));
+                                }
+                              }}
+                              className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer w-4 h-4"
+                            />
+                          </th>
+                          <th className="px-6 py-4">Invoice No</th>
+                          <th className="px-6 py-4">Outlet / Shop Name</th>
+                          <th className="px-6 py-4">Brand / Company</th>
+                          <th className="px-6 py-4 text-right">Bill Value</th>
+                          <th className="px-6 py-4 text-center">Status</th>
+                          <th className="px-6 py-4 text-center">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100 text-sm">
+                        {filteredInvoices.map((inv) => (
+                          <tr key={inv.id} className="hover:bg-slate-50/80 transition-colors">
+                            <td className="px-4 py-4 text-center w-12">
+                              <input
+                                type="checkbox"
+                                checked={selectedInvoiceIds.includes(inv.id)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedInvoiceIds([...selectedInvoiceIds, inv.id]);
+                                  } else {
+                                    setSelectedInvoiceIds(selectedInvoiceIds.filter(id => id !== inv.id));
+                                  }
+                                }}
+                                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer w-4 h-4"
+                              />
+                            </td>
+                            <td className="px-6 py-4 font-bold text-blue-700 font-mono">{inv.invoiceNo}</td>
+                            <td className="px-6 py-4">
+                              <p className="font-semibold text-gray-950">{inv.shopName}</p>
+                              <p className="text-[10px] text-gray-400">{inv.route} • {inv.date}</p>
+                            </td>
+                            <td className="px-6 py-4 text-gray-500 font-medium">{inv.companyName}</td>
+                            <td className="px-6 py-4 text-right font-black text-gray-950">৳{inv.grandTotal.toLocaleString()}</td>
+                            <td className="px-6 py-4 text-center">
+                              <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                                inv.status === 'PAID' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' :
+                                inv.status === 'PARTIAL' ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-rose-50 text-rose-700 border border-rose-100'
+                              }`}>
+                                {inv.status}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-center">
+                              <div className="flex items-center justify-center space-x-2">
+                                <button
+                                  onClick={() => handleViewInvoiceDetails(inv)}
+                                  className="text-blue-600 hover:text-blue-800 p-1.5 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                                  title="View Detailed Invoice"
+                                >
+                                  <Eye className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setPrintData(inv);
+                                    setShowPrintModal(true);
+                                  }}
+                                  className="text-slate-600 hover:text-slate-800 p-1.5 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                                  title="Print Preview"
+                                >
+                                  <Printer className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -385,6 +615,41 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
 
             <h3 className="text-lg font-bold text-gray-900 mb-1">Sales Invoice Builder</h3>
             <p className="text-xs text-gray-400 mb-6">Build a retail distribution receipt. Outstanding dues accrue per-company based on payment modes.</p>
+
+            {hasAutosavedDraft && (
+              <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center justify-between text-xs animate-fadeIn">
+                <div className="flex items-center space-x-2 text-blue-700">
+                  <span className="p-1 bg-blue-100 rounded text-base">📝</span>
+                  <div>
+                    <span className="font-extrabold block">We found an auto-saved draft! (একটি ড্রাফট পাওয়া গেছে)</span>
+                    <span className="text-[10px] text-blue-500 font-medium">Would you like to restore your previous progress?</span>
+                  </div>
+                </div>
+                <div className="flex space-x-2">
+                  <button
+                    type="button"
+                    onClick={handleRestoreDraft}
+                    className="px-2.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg cursor-pointer transition-colors text-[10px]"
+                  >
+                    Restore Progress
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDiscardDraft}
+                    className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg cursor-pointer transition-colors text-[10px] border border-slate-250"
+                  >
+                    Discard
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {lastSavedTime && (
+              <div className="absolute top-4 left-6 flex items-center space-x-1.5 text-[10px] font-bold text-slate-400">
+                <span className={`w-1.5 h-1.5 rounded-full ${isFlashActive ? 'bg-emerald-500 animate-ping' : 'bg-slate-300'}`}></span>
+                <span>Last auto-saved: {lastSavedTime}</span>
+              </div>
+            )}
 
             <form onSubmit={handleCreateInvoice} className="space-y-4">
               {/* Header Fields */}
@@ -759,10 +1024,14 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
 
             <div className="mt-6 flex space-x-3">
               <button
-                onClick={() => window.print()}
-                className="flex-1 bg-slate-100 hover:bg-slate-200 text-gray-700 font-bold py-2.5 rounded-xl text-xs cursor-pointer text-center"
+                onClick={() => {
+                  setPrintData(selectedInvoice);
+                  setShowPrintModal(true);
+                }}
+                className="flex-1 bg-slate-100 hover:bg-slate-200 text-gray-700 font-bold py-2.5 rounded-xl text-xs cursor-pointer text-center flex items-center justify-center space-x-1.5"
               >
-                Print Receipt
+                <Printer className="w-4 h-4" />
+                <span>Print Preview</span>
               </button>
               <button
                 onClick={() => setIsDetailModalOpen(false)}
@@ -773,6 +1042,19 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
             </div>
           </div>
         </div>
+      )}
+
+      {/* Reusable Print Wrapper Modal for Invoices */}
+      {showPrintModal && printData && (
+        <PrintWrapper
+          type="invoice"
+          title="বিক্রয় ইনভয়েস মেমো (Sales Invoice Memo)"
+          data={printData}
+          onClose={() => {
+            setShowPrintModal(false);
+            setPrintData(null);
+          }}
+        />
       )}
     </div>
   );
