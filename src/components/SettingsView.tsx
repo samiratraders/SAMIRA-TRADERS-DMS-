@@ -14,6 +14,10 @@ interface SettingsViewProps {
   currentUser: UserProfile | null;
   theme?: 'light' | 'dark' | 'system';
   setTheme?: (theme: 'light' | 'dark' | 'system') => void;
+  syncFrequency?: '30s' | '1m' | '5m';
+  setSyncFrequency?: (freq: '30s' | '1m' | '5m') => void;
+  brandPalette?: string;
+  setBrandPalette?: (palette: string) => void;
 }
 
 const ROLES = [
@@ -82,7 +86,15 @@ const DEFAULT_PERMISSIONS: { [role: string]: { [perm: string]: boolean } } = {
   }
 };
 
-export default function SettingsView({ currentUser, theme = 'light', setTheme }: SettingsViewProps) {
+export default function SettingsView({ 
+  currentUser, 
+  theme = 'light', 
+  setTheme, 
+  syncFrequency = '30s', 
+  setSyncFrequency,
+  brandPalette = 'samira_blue',
+  setBrandPalette
+}: SettingsViewProps) {
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -1552,6 +1564,208 @@ export default function SettingsView({ currentUser, theme = 'light', setTheme }:
                 </p>
               </div>
             </button>
+          </div>
+          
+          {/* Brand Color Palettes Selection */}
+          <div className="space-y-4 border-t border-slate-100 dark:border-slate-800 pt-6">
+            <div>
+              <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                <span className="text-lg">🎨</span>
+                <span>Brand Color Palette</span>
+              </h3>
+              <p className="text-[10.5px] text-slate-400 dark:text-slate-400 mt-1">
+                Select from different premium brand palettes to customize the primary application styling, menus, and layout buttons.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+              {/* Samira Blue */}
+              <button
+                type="button"
+                onClick={() => setBrandPalette && setBrandPalette('samira_blue')}
+                className={`p-4 rounded-2xl border text-left transition-all flex flex-col justify-between cursor-pointer focus:outline-none h-32 ${
+                  brandPalette === 'samira_blue'
+                    ? 'border-blue-600 bg-blue-50/25 dark:bg-blue-950/25 ring-2 ring-blue-500/10'
+                    : 'border-slate-150 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 bg-slate-50/30 dark:bg-slate-850/20'
+                }`}
+              >
+                <div className="flex justify-between items-center w-full">
+                  <span className="text-[10px] font-bold text-slate-400">Samira Blue</span>
+                  <span className="w-4 h-4 rounded-full bg-[#2563eb] border border-white"></span>
+                </div>
+                <div className="flex gap-1 mt-2">
+                  <span className="w-4 h-2 rounded bg-[#eff6ff]"></span>
+                  <span className="w-4 h-2 rounded bg-[#bfdbfe]"></span>
+                  <span className="w-4 h-2 rounded bg-[#3b82f6]"></span>
+                  <span className="w-4 h-2 rounded bg-[#1e3a8a]"></span>
+                </div>
+                <p className="text-[9px] text-slate-400 mt-1 leading-tight">Default terminal cobalt blue.</p>
+              </button>
+
+              {/* Emerald Green */}
+              <button
+                type="button"
+                onClick={() => setBrandPalette && setBrandPalette('emerald_green')}
+                className={`p-4 rounded-2xl border text-left transition-all flex flex-col justify-between cursor-pointer focus:outline-none h-32 ${
+                  brandPalette === 'emerald_green'
+                    ? 'border-blue-600 bg-blue-50/25 dark:bg-blue-950/25 ring-2 ring-blue-500/10'
+                    : 'border-slate-150 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 bg-slate-50/30 dark:bg-slate-850/20'
+                }`}
+              >
+                <div className="flex justify-between items-center w-full">
+                  <span className="text-[10px] font-bold text-slate-400">Emerald Green</span>
+                  <span className="w-4 h-4 rounded-full bg-[#059669] border border-white"></span>
+                </div>
+                <div className="flex gap-1 mt-2">
+                  <span className="w-4 h-2 rounded bg-[#f0fdf4]"></span>
+                  <span className="w-4 h-2 rounded bg-[#bbf7d0]"></span>
+                  <span className="w-4 h-2 rounded bg-[#10b981]"></span>
+                  <span className="w-4 h-2 rounded bg-[#064e3b]"></span>
+                </div>
+                <p className="text-[9px] text-slate-400 mt-1 leading-tight">Calming, highly readable green workspace.</p>
+              </button>
+
+              {/* Slate Dark */}
+              <button
+                type="button"
+                onClick={() => setBrandPalette && setBrandPalette('slate_dark')}
+                className={`p-4 rounded-2xl border text-left transition-all flex flex-col justify-between cursor-pointer focus:outline-none h-32 ${
+                  brandPalette === 'slate_dark'
+                    ? 'border-blue-600 bg-blue-50/25 dark:bg-blue-950/25 ring-2 ring-blue-500/10'
+                    : 'border-slate-150 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 bg-slate-50/30 dark:bg-slate-850/20'
+                }`}
+              >
+                <div className="flex justify-between items-center w-full">
+                  <span className="text-[10px] font-bold text-slate-400">Slate Dark</span>
+                  <span className="w-4 h-4 rounded-full bg-[#475569] border border-white"></span>
+                </div>
+                <div className="flex gap-1 mt-2">
+                  <span className="w-4 h-2 rounded bg-[#f8fafc]"></span>
+                  <span className="w-4 h-2 rounded bg-[#e2e8f0]"></span>
+                  <span className="w-4 h-2 rounded bg-[#64748b]"></span>
+                  <span className="w-4 h-2 rounded bg-[#0f172a]"></span>
+                </div>
+                <p className="text-[9px] text-slate-400 mt-1 leading-tight">Minimalist, elegant high-contrast slate.</p>
+              </button>
+
+              {/* Crimson Red */}
+              <button
+                type="button"
+                onClick={() => setBrandPalette && setBrandPalette('crimson_red')}
+                className={`p-4 rounded-2xl border text-left transition-all flex flex-col justify-between cursor-pointer focus:outline-none h-32 ${
+                  brandPalette === 'crimson_red'
+                    ? 'border-blue-600 bg-blue-50/25 dark:bg-blue-950/25 ring-2 ring-blue-500/10'
+                    : 'border-slate-150 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 bg-slate-50/30 dark:bg-slate-850/20'
+                }`}
+              >
+                <div className="flex justify-between items-center w-full">
+                  <span className="text-[10px] font-bold text-slate-400">Crimson Red</span>
+                  <span className="w-4 h-4 rounded-full bg-[#e03131] border border-white"></span>
+                </div>
+                <div className="flex gap-1 mt-2">
+                  <span className="w-4 h-2 rounded bg-[#fff5f5]"></span>
+                  <span className="w-4 h-2 rounded bg-[#ffc9c9]"></span>
+                  <span className="w-4 h-2 rounded bg-[#fa5252]"></span>
+                  <span className="w-4 h-2 rounded bg-[#961212]"></span>
+                </div>
+                <p className="text-[9px] text-slate-400 mt-1 leading-tight">Energetic crimson branding.</p>
+              </button>
+
+              {/* Royal Purple */}
+              <button
+                type="button"
+                onClick={() => setBrandPalette && setBrandPalette('royal_purple')}
+                className={`p-4 rounded-2xl border text-left transition-all flex flex-col justify-between cursor-pointer focus:outline-none h-32 ${
+                  brandPalette === 'royal_purple'
+                    ? 'border-blue-600 bg-blue-50/25 dark:bg-blue-950/25 ring-2 ring-blue-500/10'
+                    : 'border-slate-150 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 bg-slate-50/30 dark:bg-slate-850/20'
+                }`}
+              >
+                <div className="flex justify-between items-center w-full">
+                  <span className="text-[10px] font-bold text-slate-400">Royal Purple</span>
+                  <span className="w-4 h-4 rounded-full bg-[#9333ea] border border-white"></span>
+                </div>
+                <div className="flex gap-1 mt-2">
+                  <span className="w-4 h-2 rounded bg-[#faf5ff]"></span>
+                  <span className="w-4 h-2 rounded bg-[#e9d5ff]"></span>
+                  <span className="w-4 h-2 rounded bg-[#a855f7]"></span>
+                  <span className="w-4 h-2 rounded bg-[#581c87]"></span>
+                </div>
+                <p className="text-[9px] text-slate-400 mt-1 leading-tight">Prestigious purple contrast palette.</p>
+              </button>
+            </div>
+          </div>
+
+          {/* Sync Frequency Settings */}
+          <div className="space-y-4 border-t border-slate-100 dark:border-slate-800 pt-6">
+            <div>
+              <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                <RefreshCw className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <span>Sync Frequency & Auto-Refresh</span>
+              </h3>
+              <p className="text-[10.5px] text-slate-400 dark:text-slate-400 mt-1">
+                Configure the interval frequency for background synchronisation of low-stock alerts, live inventory ledger data, and network connection checks.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* 30 seconds */}
+              <button
+                type="button"
+                onClick={() => setSyncFrequency && setSyncFrequency('30s')}
+                className={`p-4 rounded-2xl border text-left transition-all flex items-center justify-between cursor-pointer focus:outline-none ${
+                  syncFrequency === '30s'
+                    ? 'border-blue-600 bg-blue-50/25 ring-2 ring-blue-500/10'
+                    : 'border-slate-150 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 bg-slate-50/30 dark:bg-slate-850/20'
+                }`}
+              >
+                <div className="space-y-1">
+                  <h4 className="text-xs font-black text-slate-900 dark:text-white">Real-Time (30 Seconds)</h4>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500">High-frequency syncing, recommended for active sales periods.</p>
+                </div>
+                {syncFrequency === '30s' && (
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0 ml-2"></span>
+                )}
+              </button>
+
+              {/* 1 minute */}
+              <button
+                type="button"
+                onClick={() => setSyncFrequency && setSyncFrequency('1m')}
+                className={`p-4 rounded-2xl border text-left transition-all flex items-center justify-between cursor-pointer focus:outline-none ${
+                  syncFrequency === '1m'
+                    ? 'border-blue-600 bg-blue-50/25 ring-2 ring-blue-500/10'
+                    : 'border-slate-150 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 bg-slate-50/30 dark:bg-slate-850/20'
+                }`}
+              >
+                <div className="space-y-1">
+                  <h4 className="text-xs font-black text-slate-900 dark:text-white">Balanced (1 Minute)</h4>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500">Standard background interval, balances device battery and data freshness.</p>
+                </div>
+                {syncFrequency === '1m' && (
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0 ml-2"></span>
+                )}
+              </button>
+
+              {/* 5 minutes */}
+              <button
+                type="button"
+                onClick={() => setSyncFrequency && setSyncFrequency('5m')}
+                className={`p-4 rounded-2xl border text-left transition-all flex items-center justify-between cursor-pointer focus:outline-none ${
+                  syncFrequency === '5m'
+                    ? 'border-blue-600 bg-blue-50/25 ring-2 ring-blue-500/10'
+                    : 'border-slate-150 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 bg-slate-50/30 dark:bg-slate-850/20'
+                }`}
+              >
+                <div className="space-y-1">
+                  <h4 className="text-xs font-black text-slate-900 dark:text-white">Eco Mode (5 Minutes)</h4>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500">Conserves network bandwidth and system resources on slower devices.</p>
+                </div>
+                {syncFrequency === '5m' && (
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0 ml-2"></span>
+                )}
+              </button>
+            </div>
           </div>
 
           {/* Interactive Preview Container */}

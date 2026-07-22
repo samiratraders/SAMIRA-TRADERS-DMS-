@@ -9,7 +9,16 @@ import { collection, getDocs, setDoc, doc, deleteDoc } from 'firebase/firestore'
 import { db } from '../lib/firebase';
 import { Product, Company } from '../types';
 
-export default function ProductView() {
+interface ProductViewProps {
+  globalFilters?: {
+    dateFrom: string;
+    dateTo: string;
+    branch: string;
+    status: string;
+  };
+}
+
+export default function ProductView({ globalFilters }: ProductViewProps = {}) {
   const [products, setProducts] = useState<Product[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
@@ -276,10 +285,43 @@ export default function ProductView() {
     }
   };
 
-  const filtered = products.filter(p =>
-    p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    p.companyName.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filtered = products.filter(p => {
+    const matchesSearch = 
+      p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      p.companyName.toLowerCase().includes(searchTerm.toLowerCase());
+    
+    // Global filter matches
+    const matchesGlobalDate = (() => {
+      if (!globalFilters?.dateFrom && !globalFilters?.dateTo) return true;
+      if (!p.createdAt) return true;
+      const createdDate = p.createdAt.split('T')[0];
+      if (globalFilters.dateFrom && createdDate < globalFilters.dateFrom) return false;
+      if (globalFilters.dateTo && createdDate > globalFilters.dateTo) return false;
+      return true;
+    })();
+
+    const matchesGlobalBranch = (() => {
+      if (!globalFilters?.branch || globalFilters.branch === 'All') return true;
+      if (globalFilters.branch === 'head-office') return p.stockCount !== undefined;
+      return p.subDepotStocks && p.subDepotStocks[globalFilters.branch] !== undefined;
+    })();
+
+    const matchesGlobalStatus = (() => {
+      if (!globalFilters?.status || globalFilters.status === 'All') return true;
+      
+      const activeStock = (globalFilters?.branch && globalFilters.branch !== 'All' && globalFilters.branch !== 'head-office' && p.subDepotStocks)
+        ? p.subDepotStocks[globalFilters.branch] || 0
+        : p.stockCount;
+      
+      const threshold = p.reorderLevel !== undefined ? p.reorderLevel : (p.minimumStock !== undefined ? p.minimumStock : 10);
+      const isLow = activeStock <= threshold;
+      if (globalFilters.status === 'LOW_STOCK') return isLow;
+      if (globalFilters.status === 'IN_STOCK') return !isLow;
+      return true;
+    })();
+
+    return matchesSearch && matchesGlobalDate && matchesGlobalBranch && matchesGlobalStatus;
+  });
 
   return (
     <div className="space-y-6" id="products-module">
@@ -383,10 +425,21 @@ export default function ProductView() {
 
                 <div className="border-t border-slate-50 pt-4 flex items-center justify-between">
                   <div>
-                    <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider block">Depot Stock</span>
-                    <span className={`text-sm font-extrabold ${prod.stockCount <= 24 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                      {prod.stockCount} Units ({(prod.stockCount / prod.cartonSize).toFixed(1)} Ctn)
+                    <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider block">
+                      {globalFilters?.branch && globalFilters.branch !== 'All' && globalFilters.branch !== 'head-office' 
+                        ? 'Branch Stock' 
+                        : 'Depot Stock'}
                     </span>
+                    {(() => {
+                      const stockVal = (globalFilters?.branch && globalFilters.branch !== 'All' && globalFilters.branch !== 'head-office' && prod.subDepotStocks)
+                        ? prod.subDepotStocks[globalFilters.branch] || 0
+                        : prod.stockCount;
+                      return (
+                        <span className={`text-sm font-extrabold ${stockVal <= 24 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                          {stockVal} Units ({(stockVal / prod.cartonSize).toFixed(1)} Ctn)
+                        </span>
+                      );
+                    })()}
                   </div>
                   <div className="text-right">
                     <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider block">Sales Margin</span>

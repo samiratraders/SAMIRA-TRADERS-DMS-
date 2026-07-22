@@ -20,7 +20,8 @@ import {
   AlertCircle,
   RefreshCw,
   Trash2,
-  Edit
+  Edit,
+  FileDown
 } from 'lucide-react';
 import { 
   collection, 
@@ -36,9 +37,15 @@ import { Customer, Company } from '../types';
 
 interface CustomerViewProps {
   onSelectCustomerForLedger?: (customerId: string) => void;
+  globalFilters?: {
+    dateFrom: string;
+    dateTo: string;
+    branch: string;
+    status: string;
+  };
 }
 
-export default function CustomerView({ onSelectCustomerForLedger }: CustomerViewProps) {
+export default function CustomerView({ onSelectCustomerForLedger, globalFilters }: CustomerViewProps) {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
@@ -281,6 +288,47 @@ export default function CustomerView({ onSelectCustomerForLedger }: CustomerView
     setIsDetailModalOpen(true);
   };
 
+  const handleExportCSV = () => {
+    try {
+      if (filteredCustomers.length === 0) {
+        alert("কোনো কাস্টমার ডেটা পাওয়া যায়নি! (No customer data found to export)");
+        return;
+      }
+
+      // Define CSV headers
+      const headers = ["ID", "Shop Name", "Proprietor Name", "Phone", "Route", "Area", "Address", "Total Due (BDT)", "Created At"];
+      
+      // Define CSV rows with double quotes for comma/newline-safe parsing
+      const csvRows = [
+        headers.join(","),
+        ...filteredCustomers.map(c => [
+          c.id,
+          `"${(c.shopName || '').replace(/"/g, '""')}"`,
+          `"${(c.name || '').replace(/"/g, '""')}"`,
+          `"${(c.phone || '').replace(/"/g, '""')}"`,
+          `"${(c.route || '').replace(/"/g, '""')}"`,
+          `"${(c.area || '').replace(/"/g, '""')}"`,
+          `"${(c.address || '').replace(/"/g, '""')}"`,
+          c.totalDue,
+          c.createdAt ? new Date(c.createdAt).toISOString().split('T')[0] : ''
+        ].join(","))
+      ];
+
+      // Create a Blob with UTF-8 BOM so Excel decodes Bengali text and symbols correctly
+      const blob = new Blob(["\uFEFF" + csvRows.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      link.setAttribute("download", `samira_traders_customers_${new Date().toISOString().split('T')[0]}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      console.error("Failed to export customers to CSV:", err);
+      alert("CSV এক্সপোর্ট করতে সমস্যা হয়েছে।");
+    }
+  };
+
   // Filters search results
   const filteredCustomers = customers.filter(cust => {
     const matchesSearch = 
@@ -289,7 +337,25 @@ export default function CustomerView({ onSelectCustomerForLedger }: CustomerView
       cust.phone.includes(searchTerm);
     const matchesRoute = selectedRoute ? cust.route === selectedRoute : true;
     const matchesArea = selectedArea ? cust.area === selectedArea : true;
-    return matchesSearch && matchesRoute && matchesArea;
+    
+    // Global filter matches
+    const matchesGlobalDate = (() => {
+      if (!globalFilters?.dateFrom && !globalFilters?.dateTo) return true;
+      if (!cust.createdAt) return true;
+      const createdDate = cust.createdAt.split('T')[0];
+      if (globalFilters.dateFrom && createdDate < globalFilters.dateFrom) return false;
+      if (globalFilters.dateTo && createdDate > globalFilters.dateTo) return false;
+      return true;
+    })();
+
+    const matchesGlobalStatus = (() => {
+      if (!globalFilters?.status || globalFilters.status === 'All') return true;
+      if (globalFilters.status === 'WITH_DUES') return cust.totalDue > 0;
+      if (globalFilters.status === 'NO_DUES') return cust.totalDue === 0;
+      return true;
+    })();
+
+    return matchesSearch && matchesRoute && matchesArea && matchesGlobalDate && matchesGlobalStatus;
   });
 
   return (
@@ -299,14 +365,24 @@ export default function CustomerView({ onSelectCustomerForLedger }: CustomerView
           <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Customer Directory</h2>
           <p className="text-sm text-gray-500">Manage distribution outlets, routes, and company-wise ledger balances</p>
         </div>
-        <button
-          onClick={handleOpenAddModal}
-          id="btn-add-customer"
-          className="flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Add New Customer</span>
-        </button>
+        <div className="flex items-center space-x-3 shrink-0">
+          <button
+            onClick={handleExportCSV}
+            id="btn-export-customers-csv"
+            className="flex items-center justify-center space-x-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer border border-emerald-500"
+          >
+            <FileDown className="w-4.5 h-4.5" />
+            <span>Export CSV</span>
+          </button>
+          <button
+            onClick={handleOpenAddModal}
+            id="btn-add-customer"
+            className="flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add New Customer</span>
+          </button>
+        </div>
       </div>
 
       {/* Filter and Search Bar */}

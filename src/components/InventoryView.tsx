@@ -25,7 +25,9 @@ import {
   PlusCircle,
   History,
   Archive,
-  Eye
+  Eye,
+  UploadCloud,
+  CheckCircle2
 } from 'lucide-react';
 import { collection, getDocs, doc, setDoc, updateDoc, writeBatch, deleteDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -119,6 +121,453 @@ export default function InventoryView() {
   const [selectedProductForHistory, setSelectedProductForHistory] = useState<Product | null>(null);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [selectedFilterStatus, setSelectedFilterStatus] = useState<string>('ALL'); // ALL, LOW_STOCK, DAMAGE, OUT_OF_STOCK
+
+  // Bulk JSON Import modal states
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importFileName, setImportFileName] = useState('');
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importSuccess, setImportSuccess] = useState<string | null>(null);
+  const [parsedRecords, setParsedRecords] = useState<any[]>([]);
+  const [importSummary, setImportSummary] = useState<{ updated: number; created: number } | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+
+  // Selected product ids for bulk operations
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  
+  // Bulk Min Stock Modal
+  const [isBulkMinStockModalOpen, setIsBulkMinStockModalOpen] = useState(false);
+  const [bulkMinStockValue, setBulkMinStockValue] = useState<number>(5);
+  const [bulkMinStockCategories, setBulkMinStockCategories] = useState<string[]>([]);
+
+  // Bulk Price Increase Modal
+  const [isBulkPriceModalOpen, setIsBulkPriceModalOpen] = useState(false);
+  const [bulkPriceIncreasePct, setBulkPriceIncreasePct] = useState<number>(0);
+
+  // Bulk Category Reassign Modal
+  const [isBulkCategoryModalOpen, setIsBulkCategoryModalOpen] = useState(false);
+  const [bulkNewCategory, setBulkNewCategory] = useState<string>('');
+
+  // QR Scan Simulation Modal
+  const [isQrSimulateModalOpen, setIsQrSimulateModalOpen] = useState(false);
+  const [simulateProductId, setSimulateProductId] = useState<string>('');
+  const [simulateReplenishQty, setSimulateReplenishQty] = useState<number>(50);
+
+  const handleJsonFileImport = async (jsonText: string) => {
+    try {
+      const parsed = JSON.parse(jsonText);
+      const list = Array.isArray(parsed) ? parsed : [parsed];
+
+      if (list.length === 0) {
+        throw new Error("The uploaded list is empty.");
+      }
+
+      const validatedRecords: any[] = [];
+      let updatedCount = 0;
+      let createdCount = 0;
+
+      for (const record of list) {
+        if (!record.name) {
+          throw new Error("Each product record must have at least a 'name' field.");
+        }
+
+        // Match existing product
+        const existingProduct = products.find(p => 
+          (record.id && p.id === record.id) ||
+          (record.sku && p.sku === record.sku) ||
+          (record.barcode && p.barcode === record.barcode) ||
+          (p.name.toLowerCase() === record.name.toLowerCase())
+        );
+
+        if (existingProduct) {
+          const updatedFields: any = {
+            ...existingProduct,
+            history: [
+              ...(existingProduct.history || []),
+              {
+                date: new Date().toISOString().split('T')[0],
+                action: 'BULK_IMPORT_UPDATE',
+                user: localStorage.getItem('samira_current_user_name') || 'Admin',
+                details: `Bulk imported inventory values update. Stock Count: ${existingProduct.stockCount} -> ${record.stockCount ?? existingProduct.stockCount}`
+              }
+            ]
+          };
+
+          if (record.stockCount !== undefined) updatedFields.stockCount = Number(record.stockCount);
+          if (record.purchasePrice !== undefined) updatedFields.purchasePrice = Number(record.purchasePrice);
+          if (record.retailPrice !== undefined) updatedFields.retailPrice = Number(record.retailPrice);
+          if (record.wholesalePrice !== undefined) updatedFields.wholesalePrice = Number(record.wholesalePrice);
+          if (record.subDistributorPrice !== undefined) updatedFields.subDistributorPrice = Number(record.subDistributorPrice);
+          if (record.dealerPrice !== undefined) updatedFields.dealerPrice = Number(record.dealerPrice);
+          if (record.minimumStock !== undefined) updatedFields.minimumStock = Number(record.minimumStock);
+          if (record.reorderLevel !== undefined) updatedFields.reorderLevel = Number(record.reorderLevel);
+          if (record.damageStock !== undefined) updatedFields.damageStock = Number(record.damageStock);
+          if (record.cartonSize !== undefined) updatedFields.cartonSize = Number(record.cartonSize);
+          if (record.category !== undefined) updatedFields.category = record.category;
+          if (record.brand !== undefined) updatedFields.brand = record.brand;
+          if (record.packSize !== undefined) updatedFields.packSize = record.packSize;
+          if (record.sku !== undefined) updatedFields.sku = record.sku;
+          if (record.barcode !== undefined) updatedFields.barcode = record.barcode;
+
+          updatedFields.cartonPrice = updatedFields.purchasePrice * updatedFields.cartonSize;
+
+          validatedRecords.push({ action: 'UPDATE', id: existingProduct.id, data: updatedFields });
+          updatedCount++;
+        } else {
+          // Verify purchasePrice and retailPrice
+          if (record.purchasePrice === undefined || record.retailPrice === undefined) {
+            throw new Error(`Product "${record.name}" is new but missing 'purchasePrice' or 'retailPrice' fields.`);
+          }
+
+          const companyId = record.companyId || (suppliers[0]?.companyId || 'general_company_id');
+          const companyName = record.companyName || (suppliers[0]?.companyName || 'General Company');
+          const supplierId = record.supplierId || (suppliers[0]?.id || 'general_supplier_id');
+
+          const newId = record.id || 'prod-' + Date.now() + Math.random().toString(36).substr(2, 5);
+          const purchasePrice = Number(record.purchasePrice);
+          const cartonSize = Number(record.cartonSize || 12);
+
+          const newProd: any = {
+            id: newId,
+            name: record.name,
+            companyId,
+            companyName,
+            supplierId,
+            category: record.category || 'General',
+            brand: record.brand || record.companyName || 'General Brand',
+            purchasePrice,
+            retailPrice: Number(record.retailPrice),
+            wholesalePrice: record.wholesalePrice !== undefined ? Number(record.wholesalePrice) : purchasePrice * 1.05,
+            subDistributorPrice: record.subDistributorPrice !== undefined ? Number(record.subDistributorPrice) : purchasePrice * 1.03,
+            dealerPrice: record.dealerPrice !== undefined ? Number(record.dealerPrice) : purchasePrice * 1.02,
+            packSize: record.packSize || '1 Pcs',
+            cartonSize,
+            cartonPrice: purchasePrice * cartonSize,
+            stockCount: Number(record.stockCount || 0),
+            subDepotStocks: record.subDepotStocks || {},
+            openingStock: Number(record.openingStock || record.stockCount || 0),
+            damageStock: Number(record.damageStock || 0),
+            minimumStock: Number(record.minimumStock || 5),
+            reorderLevel: Number(record.reorderLevel || 10),
+            productImage: record.productImage || '',
+            sku: record.sku || 'SKU-' + newId.toUpperCase(),
+            barcode: record.barcode || '',
+            isDeleted: false,
+            createdAt: new Date().toISOString(),
+            history: [{
+              date: new Date().toISOString().split('T')[0],
+              action: 'CREATED',
+              user: localStorage.getItem('samira_current_user_name') || 'Admin',
+              details: `Created via JSON Bulk Import operation.`
+            }]
+          };
+
+          validatedRecords.push({ action: 'CREATE', id: newId, data: newProd });
+          createdCount++;
+        }
+      }
+
+      return { validatedRecords, updatedCount, createdCount };
+    } catch (err: any) {
+      throw new Error(err.message || "Invalid JSON array of products.");
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      processFile(files[0]);
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      processFile(files[0]);
+    }
+  };
+
+  const processFile = (file: File) => {
+    setImportFileName(file.name);
+    setImportError(null);
+    setImportSuccess(null);
+    setParsedRecords([]);
+    setImportSummary(null);
+
+    if (!file.name.endsWith('.json')) {
+      setImportError('Please upload a valid .json file representing the prepared product list.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const text = event.target?.result as string;
+        const { validatedRecords, updatedCount, createdCount } = await handleJsonFileImport(text);
+        setParsedRecords(validatedRecords);
+        setImportSummary({ updated: updatedCount, created: createdCount });
+      } catch (err: any) {
+        setImportError(err.message || 'Error parsing product file.');
+      }
+    };
+    reader.onerror = () => {
+      setImportError('Failed to read file.');
+    };
+    reader.readAsText(file);
+  };
+
+  const handleExecuteBulkImport = async () => {
+    if (parsedRecords.length === 0) return;
+    setIsImporting(true);
+    setImportError(null);
+    setImportSuccess(null);
+
+    try {
+      const batch = writeBatch(db);
+
+      for (const record of parsedRecords) {
+        const docRef = doc(db, 'products', record.id);
+        batch.set(docRef, record.data, { merge: true });
+      }
+
+      await batch.commit();
+
+      setImportSuccess(`Successfully processed ${parsedRecords.length} product records (${importSummary?.updated} updated, ${importSummary?.created} created).`);
+      setParsedRecords([]);
+      setImportSummary(null);
+      setImportFileName('');
+      loadData();
+    } catch (err: any) {
+      console.error("Bulk import failed:", err);
+      setImportError(err.message || "Failed to save records to Firestore. Please try again.");
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const handleBulkUpdateMinStock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (bulkMinStockCategories.length === 0) {
+      alert("দয়া করে অন্তত একটি ক্যাটাগরি সিলেক্ট করুন। (Please select at least one category)");
+      return;
+    }
+    const val = Number(bulkMinStockValue);
+    if (isNaN(val) || val < 0) {
+      alert("দয়া করে সঠিক সংখ্যা প্রদান করুন। (Please enter a valid number)");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const batch = writeBatch(db);
+      const affectedProducts = products.filter(p => bulkMinStockCategories.includes((p as any).category || 'General'));
+      
+      const currentUserName = localStorage.getItem('samira_current_user_name') || 'Admin';
+      const todayStr = new Date().toISOString().split('T')[0];
+
+      for (const prod of affectedProducts) {
+        const docRef = doc(db, 'products', prod.id);
+        const originalHistory = prod.history || [];
+        const updatedHistory = [
+          ...originalHistory,
+          {
+            date: todayStr,
+            action: 'BULK_UPDATE_MIN_STOCK',
+            user: currentUserName,
+            details: `Minimum Stock level bulk-updated to ${val} Pcs.`
+          }
+        ];
+        batch.update(docRef, {
+          minimumStock: val,
+          history: updatedHistory
+        });
+      }
+
+      await batch.commit();
+      alert(`সফলভাবে ${affectedProducts.length}টি পণ্যের মিনিমাম স্টক ${val} পিসে আপডেট করা হয়েছে।`);
+      setIsBulkMinStockModalOpen(false);
+      setBulkMinStockCategories([]);
+      loadData();
+    } catch (err: any) {
+      console.error("Failed to bulk update min stock:", err);
+      alert("Error: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleBulkPriceIncrease = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const pct = Number(bulkPriceIncreasePct);
+    if (isNaN(pct) || pct <= 0) {
+      alert("দয়া করে সঠিক শতকরা হার লিখুন (>0%)।");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const batch = writeBatch(db);
+      const currentUserName = localStorage.getItem('samira_current_user_name') || 'Admin';
+      const todayStr = new Date().toISOString().split('T')[0];
+
+      const selectedProds = products.filter(p => selectedProductIds.includes(p.id));
+
+      for (const prod of selectedProds) {
+        const docRef = doc(db, 'products', prod.id);
+        
+        // Calculate price increases
+        const multiplier = 1 + (pct / 100);
+        const purchasePrice = prod.purchasePrice * multiplier;
+        const retailPrice = prod.retailPrice * multiplier;
+        const wholesalePrice = (prod.wholesalePrice || prod.purchasePrice * 1.05) * multiplier;
+        const subDistributorPrice = (prod.subDistributorPrice || prod.purchasePrice * 1.03) * multiplier;
+        const dealerPrice = (prod.dealerPrice || prod.purchasePrice * 1.02) * multiplier;
+        const cartonPrice = purchasePrice * prod.cartonSize;
+
+        const originalHistory = prod.history || [];
+        const updatedHistory = [
+          ...originalHistory,
+          {
+            date: todayStr,
+            action: 'BULK_PRICE_INCREASE',
+            user: currentUserName,
+            details: `Prices increased by ${pct}% via bulk action.`
+          }
+        ];
+
+        batch.update(docRef, {
+          purchasePrice,
+          retailPrice,
+          wholesalePrice,
+          subDistributorPrice,
+          dealerPrice,
+          cartonPrice,
+          history: updatedHistory
+        });
+      }
+
+      await batch.commit();
+      alert(`সফলভাবে ${selectedProds.length}টি পণ্যের দাম ${pct}% বাড়ানো হয়েছে।`);
+      setIsBulkPriceModalOpen(false);
+      setSelectedProductIds([]);
+      loadData();
+    } catch (err: any) {
+      console.error("Bulk price increase failed:", err);
+      alert("Error: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleBulkCategoryReassign = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedCat = bulkNewCategory.trim();
+    if (!trimmedCat) {
+      alert("দয়া করে নতুন ক্যাটাগরির নাম দিন।");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const batch = writeBatch(db);
+      const currentUserName = localStorage.getItem('samira_current_user_name') || 'Admin';
+      const todayStr = new Date().toISOString().split('T')[0];
+
+      const selectedProds = products.filter(p => selectedProductIds.includes(p.id));
+
+      for (const prod of selectedProds) {
+        const docRef = doc(db, 'products', prod.id);
+        const originalHistory = prod.history || [];
+        const updatedHistory = [
+          ...originalHistory,
+          {
+            date: todayStr,
+            action: 'BULK_CATEGORY_REASSIGN',
+            user: currentUserName,
+            details: `Category reassigned from "${(prod as any).category || 'General'}" to "${trimmedCat}".`
+          }
+        ];
+
+        batch.update(docRef, {
+          category: trimmedCat,
+          history: updatedHistory
+        });
+      }
+
+      await batch.commit();
+      alert(`সফলভাবে ${selectedProds.length}টি পণ্যের ক্যাটাগরি "${trimmedCat}" এ পরিবর্তন করা হয়েছে।`);
+      setIsBulkCategoryModalOpen(false);
+      setSelectedProductIds([]);
+      setBulkNewCategory('');
+      loadData();
+    } catch (err: any) {
+      console.error("Bulk category reassign failed:", err);
+      alert("Error: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleExecuteMockScanReplenish = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!simulateProductId) {
+      alert("দয়া করে একটি পণ্য সিলেক্ট করুন।");
+      return;
+    }
+    const qty = Number(simulateReplenishQty);
+    if (isNaN(qty) || qty <= 0) {
+      alert("সঠিক পরিমাণ প্রদান করুন।");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const prod = products.find(p => p.id === simulateProductId);
+      if (!prod) return;
+
+      const newStock = prod.stockCount + qty;
+      const docRef = doc(db, 'products', prod.id);
+
+      const currentUserName = localStorage.getItem('samira_current_user_name') || 'Admin';
+      const todayStr = new Date().toISOString().split('T')[0];
+      const originalHistory = prod.history || [];
+      const updatedHistory = [
+        ...originalHistory,
+        {
+          date: todayStr,
+          action: 'REPLENISHED_VIA_SCAN',
+          user: currentUserName,
+          details: `Replenished ${qty} Pieces (via Simulated QR Code Barcode Scan replenishment flow).`
+        }
+      ];
+
+      await updateDoc(docRef, {
+        stockCount: newStock,
+        history: updatedHistory
+      });
+
+      alert(`সফলভাবে কিউআর কোড স্ক্যান সিমুলেশন সম্পন্ন হয়েছে! পণ্য: ${prod.name}, নতুন স্টক: ${newStock} পিস (+${qty} Pcs)`);
+      setIsQrSimulateModalOpen(false);
+      setSimulateProductId('');
+      loadData();
+    } catch (err: any) {
+      console.error("Simulated scan replenishment failed:", err);
+      alert("Error: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const loadData = async () => {
     try {
@@ -650,14 +1099,33 @@ export default function InventoryView() {
           )}
 
           {activeSubTab === 'products' && (
-            <button
-              onClick={() => setIsAddProductModalOpen(true)}
-              id="btn-add-product"
-              className="flex items-center justify-center space-x-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-all shadow-sm cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Add New Product</span>
-            </button>
+            <div className="flex space-x-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setImportFileName('');
+                  setImportError(null);
+                  setImportSuccess(null);
+                  setParsedRecords([]);
+                  setImportSummary(null);
+                  setIsImportModalOpen(true);
+                }}
+                id="btn-bulk-import-inventory"
+                className="flex items-center justify-center space-x-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2.5 rounded-lg text-sm font-semibold transition-all shadow-sm cursor-pointer border border-slate-200"
+              >
+                <UploadCloud className="w-4 h-4 text-slate-500" />
+                <span>Bulk Import (JSON)</span>
+              </button>
+
+              <button
+                onClick={() => setIsAddProductModalOpen(true)}
+                id="btn-add-product"
+                className="flex items-center justify-center space-x-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-all shadow-sm cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Add New Product</span>
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -683,6 +1151,32 @@ export default function InventoryView() {
           }`}
         >
           প্রোডাক্ট রেজিস্ট্রি (Product Registry & Margins)
+        </button>
+      </div>
+
+      {/* Utilities & Quick Modals Trigger Bar */}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            setBulkMinStockCategories([]);
+            setBulkMinStockValue(5);
+            setIsBulkMinStockModalOpen(true);
+          }}
+          className="flex items-center space-x-1.5 bg-amber-50/70 hover:bg-amber-100 text-amber-700 border border-amber-200/40 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+        >
+          <span>📦 Bulk Update Minimum Stock</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setSimulateProductId('');
+            setSimulateReplenishQty(50);
+            setIsQrSimulateModalOpen(true);
+          }}
+          className="flex items-center space-x-1.5 bg-sky-50/70 hover:bg-sky-100 text-sky-700 border border-sky-200/40 px-3.5 py-2 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+        >
+          <span>📷 Simulate QR Code Scanned</span>
         </button>
       </div>
 
@@ -824,10 +1318,69 @@ export default function InventoryView() {
 
         /* ---------------- TAB 2: PRODUCT REGISTRY & EDITING ---------------- */
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden" id="product-registry-container">
+          
+          {/* Dynamic Bulk Action Bar */}
+          {selectedProductIds.length > 0 && (
+            <div className="bg-blue-50 border-b border-blue-100 px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fadeIn">
+              <div className="flex items-center space-x-2">
+                <span className="flex h-2.5 w-2.5 relative">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500"></span>
+                </span>
+                <span className="text-xs font-black text-blue-800">
+                  {selectedProductIds.length}টি পণ্য সিলেক্ট করা হয়েছে (Selected Products)
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBulkPriceIncreasePct(5);
+                    setIsBulkPriceModalOpen(true);
+                  }}
+                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-[10px] uppercase tracking-wider cursor-pointer transition-all hover:scale-105"
+                >
+                  Percentage Price Increase
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBulkNewCategory('');
+                    setIsBulkCategoryModalOpen(true);
+                  }}
+                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-[10px] uppercase tracking-wider cursor-pointer transition-all hover:scale-105"
+                >
+                  Category Reassignment
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedProductIds([])}
+                  className="px-2.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-lg text-[10px] cursor-pointer transition-all"
+                >
+                  Deselect All
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-left text-xs">
               <thead>
                 <tr className="bg-slate-50 text-slate-500 uppercase text-[9px] font-extrabold tracking-wider border-b border-gray-100">
+                  <th className="px-4 py-4 w-10 text-center">
+                    <input
+                      type="checkbox"
+                      checked={filteredProducts.length > 0 && selectedProductIds.length === filteredProducts.length}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedProductIds(filteredProducts.map(p => p.id));
+                        } else {
+                          setSelectedProductIds([]);
+                        }
+                      }}
+                      className="w-3.5 h-3.5 text-blue-600 border-slate-300 rounded focus:ring-blue-500 cursor-pointer"
+                    />
+                  </th>
                   <th className="px-5 py-4">Product Specs</th>
                   <th className="px-5 py-4">Brand / Category</th>
                   <th className="px-5 py-4 text-right">Purchase Price</th>
@@ -845,6 +1398,20 @@ export default function InventoryView() {
 
                   return (
                     <tr key={prod.id} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="px-4 py-4 text-center">
+                        <input
+                          type="checkbox"
+                          checked={selectedProductIds.includes(prod.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedProductIds(prev => [...prev, prod.id]);
+                            } else {
+                              setSelectedProductIds(prev => prev.filter(id => id !== prod.id));
+                            }
+                          }}
+                          className="w-3.5 h-3.5 text-blue-600 border-slate-300 rounded focus:ring-blue-500 cursor-pointer"
+                        />
+                      </td>
                       <td className="px-5 py-4">
                         <div className="flex items-center space-x-3">
                           {prod.productImage ? (
@@ -1810,6 +2377,493 @@ export default function InventoryView() {
                 Close Audit Logs
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------- MODAL: BULK IMPORT (JSON) ---------------- */}
+      {isImportModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 overflow-y-auto" id="bulk-import-modal">
+          <div className="bg-white rounded-3xl max-w-2xl w-full p-6 shadow-xl relative max-h-[90vh] flex flex-col">
+            <button 
+              onClick={() => setIsImportModalOpen(false)} 
+              className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-gray-100 cursor-pointer"
+            >
+              <X className="w-5 h-5 text-gray-500" />
+            </button>
+
+            <div className="mb-4">
+              <h3 className="text-lg font-extrabold text-gray-900 mb-1 flex items-center">
+                <UploadCloud className="w-5 h-5 text-blue-600 mr-2" />
+                <span>Bulk Import & Stock Update (JSON)</span>
+              </h3>
+              <p className="text-xs text-gray-400">
+                Upload a prepared JSON file to quickly update stock quantities, modify specifications, or register new items into the distributing roster.
+              </p>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+              
+              {/* Dropzone area */}
+              <div
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`border-2 border-dashed rounded-2xl p-6 text-center transition-all ${
+                  isDragging
+                    ? 'border-blue-500 bg-blue-50/40'
+                    : importFileName
+                    ? 'border-emerald-200 bg-emerald-50/10'
+                    : 'border-slate-200 hover:border-slate-300 bg-slate-50/40'
+                }`}
+              >
+                <input
+                  type="file"
+                  id="bulk-product-file-input"
+                  accept=".json"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+                
+                <label htmlFor="bulk-product-file-input" className="cursor-pointer block space-y-2">
+                  <UploadCloud className={`w-10 h-10 mx-auto ${importFileName ? 'text-emerald-500' : 'text-slate-400'}`} />
+                  <div>
+                    <p className="text-xs font-bold text-slate-700">
+                      {importFileName ? `Selected: ${importFileName}` : 'Drag & Drop your prepared products .json file here'}
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-1">or click to browse your local device storage</p>
+                  </div>
+                </label>
+              </div>
+
+              {/* Status & Validation Message Areas */}
+              {importError && (
+                <div className="bg-rose-50 border border-rose-100 text-rose-700 p-3.5 rounded-xl text-xs flex items-start space-x-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <p className="font-medium leading-tight">{importError}</p>
+                </div>
+              )}
+
+              {importSuccess && (
+                <div className="bg-emerald-50 border border-emerald-100 text-emerald-700 p-3.5 rounded-xl text-xs flex items-start space-x-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
+                  <p className="font-bold leading-tight">{importSuccess}</p>
+                </div>
+              )}
+
+              {parsedRecords.length > 0 && (
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 space-y-3">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                    <span className="flex items-center space-x-1">
+                      <Check className="w-4 h-4 text-emerald-600 font-bold" />
+                      <span>Validated Products: {parsedRecords.length} records ready</span>
+                    </span>
+                    <span className="text-blue-600">
+                      ({importSummary?.updated} Updates, {importSummary?.created} New Products)
+                    </span>
+                  </div>
+
+                  {/* Previews scrollable section */}
+                  <div className="max-h-36 overflow-y-auto border border-slate-150 rounded-lg bg-white divide-y divide-slate-100 font-mono text-[10px]">
+                    {parsedRecords.slice(0, 15).map((rec, idx) => (
+                      <div key={idx} className="p-2 flex items-center justify-between">
+                        <div className="truncate pr-4 font-semibold text-slate-700">
+                          {rec.data.name}
+                        </div>
+                        <div className="shrink-0 flex items-center space-x-2">
+                          <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider ${
+                            rec.action === 'UPDATE' 
+                              ? 'bg-blue-100 text-blue-800' 
+                              : 'bg-emerald-100 text-emerald-800'
+                          }`}>
+                            {rec.action}
+                          </span>
+                          <span className="text-slate-500 font-bold">
+                            Stock: {rec.data.stockCount} Pcs
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                    {parsedRecords.length > 15 && (
+                      <div className="p-2 text-center text-[9px] text-slate-400 font-bold bg-slate-50">
+                        ...and {parsedRecords.length - 15} more records to parse.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Sample Template Section */}
+              <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 space-y-2">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-[10px] font-black uppercase tracking-wider text-slate-500">JSON Template & Format Guidelines</h4>
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      const template = `[
+  {
+    "name": "Mojo Cola 250ml",
+    "stockCount": 120,
+    "purchasePrice": 12.5,
+    "retailPrice": 15,
+    "sku": "BEV-MOJO-250",
+    "barcode": "894110012015"
+  },
+  {
+    "name": "Super Fresh Water 500ml",
+    "stockCount": 240,
+    "purchasePrice": 10,
+    "retailPrice": 12,
+    "sku": "WAT-SF-500",
+    "barcode": "894110012018"
+  }
+]`;
+                      navigator.clipboard.writeText(template);
+                      alert('JSON template copied to clipboard!');
+                    }}
+                    className="text-[10px] text-blue-600 font-bold hover:underline cursor-pointer"
+                  >
+                    Copy Template
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-400 leading-tight">
+                  The tool automatically matches products by <strong>exact name, barcode, or SKU code</strong> to overwrite active inventory values. Missing products can be created on-the-fly if both <code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-[9px]">purchasePrice</code> and <code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-[9px]">retailPrice</code> are provided.
+                </p>
+                <pre className="p-2 bg-slate-900 text-blue-400 rounded-lg text-[9px] font-mono overflow-x-auto max-h-28">
+{`[
+  {
+    "name": "Mojo Cola 250ml",
+    "stockCount": 120,
+    "purchasePrice": 12.5,
+    "retailPrice": 15,
+    "sku": "BEV-MOJO-250",
+    "barcode": "894110012015"
+  }
+]`}
+                </pre>
+              </div>
+
+            </div>
+
+            {/* Actions Footer */}
+            <div className="pt-4 border-t flex justify-between items-center mt-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setParsedRecords([]);
+                  setImportSummary(null);
+                  setImportFileName('');
+                  setImportError(null);
+                  setImportSuccess(null);
+                }}
+                className="text-xs text-rose-600 hover:underline font-bold"
+                disabled={parsedRecords.length === 0}
+              >
+                Reset List
+              </button>
+              
+              <div className="flex space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setIsImportModalOpen(false)}
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-4 py-2.5 rounded-xl text-xs cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExecuteBulkImport}
+                  disabled={parsedRecords.length === 0 || isImporting}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 text-white font-bold px-5 py-2.5 rounded-xl text-xs flex items-center space-x-2 cursor-pointer shadow-md"
+                >
+                  {isImporting ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Writing Records...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Execute Bulk Import</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 1: Bulk Update Minimum Stock level for selected categories */}
+      {isBulkMinStockModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 shadow-2xl relative space-y-5 text-slate-800">
+            <button 
+              onClick={() => setIsBulkMinStockModalOpen(false)} 
+              className="absolute top-4 right-4 p-1 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-black text-slate-900 uppercase tracking-wider">
+                Bulk Update Minimum Stock (মিনিমাম স্টক আপডেট)
+              </h3>
+              <p className="text-xs text-slate-500 font-medium">Select product categories and specify the default minimum stock alert level in bulk.</p>
+            </div>
+
+            <form onSubmit={handleBulkUpdateMinStock} className="space-y-4">
+              <div>
+                <label className="block text-[11px] font-extrabold uppercase text-slate-500 mb-2 tracking-wider">Select Categories *</label>
+                <div className="max-h-36 overflow-y-auto border border-slate-200 rounded-xl p-3 bg-slate-50 space-y-1.5">
+                  {categoriesList.map(cat => (
+                    <label key={cat} className="flex items-center space-x-2 text-xs font-bold text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={bulkMinStockCategories.includes(cat)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setBulkMinStockCategories(prev => [...prev, cat]);
+                          } else {
+                            setBulkMinStockCategories(prev => prev.filter(c => c !== cat));
+                          }
+                        }}
+                        className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
+                      />
+                      <span>{cat}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-extrabold uppercase text-slate-500 mb-1.5 tracking-wider">Minimum Stock Value (পিস পরিমাণ)</label>
+                <input
+                  type="number"
+                  min="0"
+                  required
+                  placeholder="5"
+                  value={bulkMinStockValue}
+                  onChange={(e) => setBulkMinStockValue(Math.max(0, parseInt(e.target.value) || 0))}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none"
+                />
+              </div>
+
+              <div className="pt-2 flex justify-end space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setIsBulkMinStockModalOpen(false)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs cursor-pointer transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs cursor-pointer transition-all shadow-md"
+                >
+                  Update Minimum Stock
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: Bulk Percentage Price Increase */}
+      {isBulkPriceModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 shadow-2xl relative space-y-5 text-slate-800">
+            <button 
+              onClick={() => setIsBulkPriceModalOpen(false)} 
+              className="absolute top-4 right-4 p-1 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-black text-slate-900 uppercase tracking-wider">
+                Percentage Price Increase (দাম বৃদ্ধি করুন)
+              </h3>
+              <p className="text-xs text-slate-500 font-medium">Apply a percentage price increase across all {selectedProductIds.length} selected items.</p>
+            </div>
+
+            <form onSubmit={handleBulkPriceIncrease} className="space-y-4">
+              <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl text-[11px] text-amber-800 font-semibold leading-relaxed">
+                ⚠️ This action will modify purchase, retail (MRP), wholesale, sub-distributor, and dealer price margins for the selected items. It cannot be undone automatically.
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-extrabold uppercase text-slate-500 mb-1.5 tracking-wider">Percentage Increase (%)</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    required
+                    placeholder="5.0"
+                    value={bulkPriceIncreasePct || ''}
+                    onChange={(e) => setBulkPriceIncreasePct(Math.max(0, parseFloat(e.target.value) || 0))}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none pr-8"
+                  />
+                  <span className="absolute right-3 top-3 text-xs font-bold text-slate-400">%</span>
+                </div>
+              </div>
+
+              <div className="pt-2 flex justify-end space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setIsBulkPriceModalOpen(false)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs cursor-pointer transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs cursor-pointer transition-all shadow-md"
+                >
+                  Apply Price Increase
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 3: Bulk Category Reassignment */}
+      {isBulkCategoryModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 shadow-2xl relative space-y-5 text-slate-800">
+            <button 
+              onClick={() => setIsBulkCategoryModalOpen(false)} 
+              className="absolute top-4 right-4 p-1 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-black text-slate-900 uppercase tracking-wider">
+                Category Reassignment (ক্যাটাগরি রিঅ্যাসাইন)
+              </h3>
+              <p className="text-xs text-slate-500 font-medium">Reassign {selectedProductIds.length} products to a new or existing category simultaneously.</p>
+            </div>
+
+            <form onSubmit={handleBulkCategoryReassign} className="space-y-4">
+              <div>
+                <label className="block text-[11px] font-extrabold uppercase text-slate-500 mb-1.5 tracking-wider">New Category Name *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Energy Drinks, Cosmetics"
+                  value={bulkNewCategory}
+                  onChange={(e) => setBulkNewCategory(e.target.value)}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wide mb-1.5">Or Choose From Existing Categories</label>
+                <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                  {categoriesList.map(cat => (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => setBulkNewCategory(cat)}
+                      className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg text-[10px] cursor-pointer"
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="pt-2 flex justify-end space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setIsBulkCategoryModalOpen(false)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs cursor-pointer transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs cursor-pointer transition-all shadow-md"
+                >
+                  Reassign Category
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 4: QR Code Scan Simulation Panel */}
+      {isQrSimulateModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-white border border-slate-200 rounded-3xl max-w-md w-full p-6 shadow-2xl relative space-y-5 text-slate-800">
+            <button 
+              onClick={() => setIsQrSimulateModalOpen(false)} 
+              className="absolute top-4 right-4 p-1 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-black text-slate-900 uppercase tracking-wider">
+                📷 Simulate QR Code Scan (স্টক বাড়ানোর কিউআর সিমুলেটর)
+              </h3>
+              <p className="text-xs text-slate-500 font-medium">Simulate scanning a product QR/barcode block during delivery replenishment flows.</p>
+            </div>
+
+            <form onSubmit={handleExecuteMockScanReplenish} className="space-y-4">
+              <div>
+                <label className="block text-[11px] font-extrabold uppercase text-slate-500 mb-1.5 tracking-wider">Select Product to Scan *</label>
+                <select
+                  required
+                  value={simulateProductId}
+                  onChange={(e) => setSimulateProductId(e.target.value)}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 font-semibold focus:outline-none"
+                >
+                  <option value="">Choose compatible product</option>
+                  {products.filter(p => !p.isDeleted).map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} (ID: {p.id.substr(0, 8)}... | Barcode: {p.barcode || 'N/A'})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-extrabold uppercase text-slate-500 mb-1.5 tracking-wider">Replenishment Quantity (Pcs)</label>
+                <input
+                  type="number"
+                  min="1"
+                  required
+                  value={simulateReplenishQty}
+                  onChange={(e) => setSimulateReplenishQty(Math.max(1, parseInt(e.target.value) || 1))}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none"
+                />
+              </div>
+
+              <div className="p-3 bg-emerald-50 border border-emerald-100 text-emerald-800 rounded-2xl text-[10px] font-bold">
+                💡 This simulates scanning a delivery crate barcode. The system instantly detects the product and increments central depot stock count without opening your camera feed.
+              </div>
+
+              <div className="pt-2 flex justify-end space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setIsQrSimulateModalOpen(false)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs cursor-pointer transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs cursor-pointer transition-all shadow-md"
+                >
+                  Trigger Simulation Scan
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

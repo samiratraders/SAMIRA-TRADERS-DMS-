@@ -21,10 +21,16 @@ import {
   FileText,
   Tag,
   QrCode,
-  Camera
+  Camera,
+  Smartphone,
+  DollarSign,
+  Filter,
+  SlidersHorizontal,
+  Calendar,
+  Building2
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
 import { db, seedInitialAdmin } from './lib/firebase';
 import { seedSampleData } from './lib/seedData';
 import { UserProfile, UserRole } from './types';
@@ -122,10 +128,144 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [loading, setLoading] = useState(true);
 
+  // Last Active states
+  const [lastActiveTime, setLastActiveTime] = useState<string | null>(null);
+  const [sessionStartTime] = useState<string>(() => new Date().toISOString());
+
+  useEffect(() => {
+    if (!currentUser) {
+      setLastActiveTime(null);
+      return;
+    }
+
+    const fetchAndDocUpdateLastActive = async () => {
+      try {
+        const userDocRef = doc(db, 'users', currentUser.id);
+        const userDocSnap = await getDoc(userDocRef);
+        
+        if (userDocSnap.exists()) {
+          const userData = userDocSnap.data();
+          if (userData && userData.lastActive) {
+            setLastActiveTime(userData.lastActive);
+          } else {
+            setLastActiveTime(null);
+          }
+          
+          // Now update firestore with the current timestamp
+          await setDoc(userDocRef, { 
+            lastActive: new Date().toISOString() 
+          }, { merge: true });
+        } else {
+          setLastActiveTime(null);
+        }
+      } catch (err) {
+        console.error("Error fetching/updating last active timestamp:", err);
+        setLastActiveTime(null);
+      }
+    };
+
+    fetchAndDocUpdateLastActive();
+  }, [currentUser]);
+
+  const formatTime = (isoString: string) => {
+    try {
+      const d = new Date(isoString);
+      return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return isoString;
+    }
+  };
+
   // Theme state persisted in localStorage
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(() => {
     return (localStorage.getItem('dms_theme') as 'light' | 'dark' | 'system') || 'light';
   });
+
+  // Sync Frequency state persisted in localStorage
+  const [syncFrequency, setSyncFrequency] = useState<'30s' | '1m' | '5m'>(() => {
+    return (localStorage.getItem('dms_sync_frequency') as '30s' | '1m' | '5m') || '30s';
+  });
+
+  // Brand color palette configuration
+  const brandPalettes: { [key: string]: { [cssVar: string]: string } } = {
+    samira_blue: {
+      '--brand-50': '#eff6ff',
+      '--brand-100': '#dbeafe',
+      '--brand-200': '#bfdbfe',
+      '--brand-300': '#93c5fd',
+      '--brand-400': '#60a5fa',
+      '--brand-500': '#3b82f6',
+      '--brand-600': '#2563eb',
+      '--brand-700': '#1d4ed8',
+      '--brand-800': '#1e40af',
+      '--brand-900': '#1e3a8a',
+      '--brand-950': '#172554',
+    },
+    emerald_green: {
+      '--brand-50': '#f0fdf4',
+      '--brand-100': '#dcfce7',
+      '--brand-200': '#bbf7d0',
+      '--brand-300': '#86efac',
+      '--brand-400': '#4ade80',
+      '--brand-500': '#10b981',
+      '--brand-600': '#059669',
+      '--brand-700': '#047857',
+      '--brand-800': '#065f46',
+      '--brand-900': '#064e3b',
+      '--brand-950': '#022c22',
+    },
+    slate_dark: {
+      '--brand-50': '#f8fafc',
+      '--brand-100': '#f1f5f9',
+      '--brand-200': '#e2e8f0',
+      '--brand-300': '#cbd5e1',
+      '--brand-400': '#94a3b8',
+      '--brand-500': '#64748b',
+      '--brand-600': '#475569',
+      '--brand-700': '#334155',
+      '--brand-800': '#1e293b',
+      '--brand-900': '#0f172a',
+      '--brand-950': '#020617',
+    },
+    crimson_red: {
+      '--brand-50': '#fff5f5',
+      '--brand-100': '#ffe3e3',
+      '--brand-200': '#ffc9c9',
+      '--brand-300': '#ffa8a8',
+      '--brand-400': '#ff8787',
+      '--brand-500': '#fa5252',
+      '--brand-600': '#e03131',
+      '--brand-700': '#c92a2a',
+      '--brand-800': '#b01e1e',
+      '--brand-900': '#961212',
+      '--brand-950': '#5c0808',
+    },
+    royal_purple: {
+      '--brand-50': '#faf5ff',
+      '--brand-100': '#f3e8ff',
+      '--brand-200': '#e9d5ff',
+      '--brand-300': '#d8b4fe',
+      '--brand-400': '#c084fc',
+      '--brand-500': '#a855f7',
+      '--brand-600': '#9333ea',
+      '--brand-700': '#7e22ce',
+      '--brand-800': '#6b21a8',
+      '--brand-900': '#581c87',
+      '--brand-950': '#3b0764',
+    }
+  };
+
+  const [brandPalette, setBrandPalette] = useState<string>(() => {
+    return localStorage.getItem('dms_brand_palette') || 'samira_blue';
+  });
+
+  useEffect(() => {
+    const root = window.document.documentElement;
+    const palette = brandPalettes[brandPalette] || brandPalettes.samira_blue;
+    Object.entries(palette).forEach(([key, val]) => {
+      root.style.setProperty(key, val);
+    });
+  }, [brandPalette]);
 
   useEffect(() => {
     const root = window.document.documentElement;
@@ -157,6 +297,37 @@ export default function App() {
     }
   }, [theme]);
   
+  // Global Filter States
+  const [filterDateFrom, setFilterDateFrom] = useState('');
+  const [filterDateTo, setFilterDateTo] = useState('');
+  const [filterBranch, setFilterBranch] = useState('All');
+  const [filterStatus, setFilterStatus] = useState('All');
+  const [subDepots, setSubDepots] = useState<any[]>([]);
+  const [isFilterDropdownOpen, setIsFilterDropdownOpen] = useState(false);
+
+  // Fetch branches/sub-depots for the branch filter
+  useEffect(() => {
+    if (!currentUser) return;
+    const fetchSubDepots = async () => {
+      try {
+        const snap = await getDocs(collection(db, 'subDepots'));
+        const list: any[] = [];
+        snap.forEach(d => {
+          list.push(d.data());
+        });
+        setSubDepots(list);
+      } catch (err) {
+        console.error("Error fetching subdepots for filters:", err);
+      }
+    };
+    fetchSubDepots();
+  }, [currentUser]);
+
+  // Reset status filter when activeTab transitions to avoid invalid status choices
+  useEffect(() => {
+    setFilterStatus('All');
+  }, [activeTab]);
+
   // Global Search State
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchLoading, setIsSearchLoading] = useState(false);
@@ -441,7 +612,16 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [currentUser, searchCache]);
 
-  const [loginUsername, setLoginUsername] = useState('');
+  const [rememberMe, setRememberMe] = useState(() => {
+    return localStorage.getItem('samira_remember_me') === 'true';
+  });
+  const [loginUsername, setLoginUsername] = useState(() => {
+    const remembered = localStorage.getItem('samira_remember_me') === 'true';
+    if (remembered) {
+      return localStorage.getItem('samira_remembered_username') || '';
+    }
+    return '';
+  });
   const [loginPassword, setLoginPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
@@ -653,40 +833,156 @@ export default function App() {
   // Notifications states
   const [lowStockCount, setLowStockCount] = useState<number>(0);
   const [lowStockProducts, setLowStockProducts] = useState<any[]>([]);
+  const [outstandingPayments, setOutstandingPayments] = useState<any[]>([]);
+  const [pendingApprovals, setPendingApprovals] = useState<any[]>([]);
+  const [notificationPermission, setNotificationPermission] = useState<string>('default');
   const [isNotificationDrawerOpen, setIsNotificationDrawerOpen] = useState<boolean>(false);
+  const [notificationActiveTab, setNotificationActiveTab] = useState<'low_stock' | 'due_payments' | 'approvals'>('low_stock');
+
+  useEffect(() => {
+    if ('Notification' in window) {
+      setNotificationPermission(Notification.permission);
+    }
+  }, []);
+
+  const requestNotificationPermission = async () => {
+    if ('Notification' in window) {
+      const res = await Notification.requestPermission();
+      setNotificationPermission(res);
+      if (res === 'granted') {
+        new Notification("SAMIRA TRADERS (DMS)", {
+          body: "Push alerts successfully enabled for mobile and desktop screens!",
+        });
+      }
+    }
+  };
+
+  const triggerWebPushNotification = (title: string, body: string) => {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        new Notification(title, {
+          body,
+          icon: '/favicon.ico'
+        });
+      } catch (err) {
+        console.warn("Could not fire native notification:", err);
+      }
+    }
+  };
 
   useEffect(() => {
     if (!currentUser) {
       setLowStockProducts([]);
       setLowStockCount(0);
+      setOutstandingPayments([]);
+      setPendingApprovals([]);
       return;
     }
 
-    const fetchProductsForNotifications = async () => {
+    const fetchSystemNotifications = async () => {
       try {
-        const snap = await getDocs(collection(db, 'products'));
-        const list: any[] = [];
-        snap.forEach(d => {
+        // 1. Fetch low stock products
+        const prodSnap = await getDocs(collection(db, 'products'));
+        const prodList: any[] = [];
+        prodSnap.forEach(d => {
           const item = d.data();
           if (!item.isDeleted) {
-            list.push(item);
+            prodList.push(item);
           }
         });
-
-        const lowStock = list.filter(p => p.stockCount <= (p.reorderLevel !== undefined ? p.reorderLevel : (p.minimumStock !== undefined ? p.minimumStock : 10)));
-        setLowStockProducts(lowStock);
+        const lowStock = prodList.filter(p => p.stockCount <= (p.reorderLevel !== undefined ? p.reorderLevel : (p.minimumStock !== undefined ? p.minimumStock : 10)));
+        
+        setLowStockProducts((prev) => {
+          if (lowStock.length > prev.length) {
+            const added = lowStock.filter(item => !prev.some(p => p.id === item.id));
+            if (added.length > 0) {
+              triggerWebPushNotification(
+                "Low Stock Alert (কম স্টক সতর্কতা)",
+                `${added.length} product(s) fell below reorder level. Please check inventory.`
+              );
+            }
+          }
+          return lowStock;
+        });
         setLowStockCount(lowStock.length);
+
+        // 2. Fetch outstanding customer payments nearing their due date
+        const invSnap = await getDocs(collection(db, 'invoices'));
+        const dueInvoices: any[] = [];
+        const today = new Date();
+        invSnap.forEach(d => {
+          const inv = d.data();
+          if (inv.status === 'DUE' || inv.status === 'PARTIAL') {
+            const invDate = new Date(inv.date || inv.createdAt);
+            const dueDate = new Date(invDate.getTime() + 15 * 24 * 60 * 60 * 1000); // 15 Days term
+            const diffTime = dueDate.getTime() - today.getTime();
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            
+            if (diffDays <= 5) {
+              dueInvoices.push({
+                ...inv,
+                id: d.id,
+                dueDays: diffDays,
+                overdue: diffDays < 0,
+                dueAmount: inv.grandTotal - (inv.paymentReceived || 0)
+              });
+            }
+          }
+        });
+        
+        setOutstandingPayments((prev) => {
+          if (dueInvoices.length > prev.length) {
+            const added = dueInvoices.filter(item => !prev.some(p => p.id === item.id));
+            if (added.length > 0) {
+              triggerWebPushNotification(
+                "Outstanding Payment (বকেয়া পেমেন্ট সতর্কতা)",
+                `Memo #${added[0].invoiceNo} for ${added[0].shopName} is nearing its due date.`
+              );
+            }
+          }
+          return dueInvoices;
+        });
+
+        // 3. Fetch pending manager approvals for collection transfers
+        const colSnap = await getDocs(collection(db, 'collections'));
+        const pendingCol: any[] = [];
+        colSnap.forEach(d => {
+          const col = d.data();
+          if (col.status === 'PENDING' || col.status === 'TRANSFERRED') {
+            pendingCol.push({
+              ...col,
+              id: d.id
+            });
+          }
+        });
+        
+        setPendingApprovals((prev) => {
+          if (pendingCol.length > prev.length) {
+            const added = pendingCol.filter(item => !prev.some(p => p.id === item.id));
+            if (added.length > 0) {
+              triggerWebPushNotification(
+                "Pending Handover Approval (অনুমোদন পেন্ডিং)",
+                `Collection handover of ৳${added[0].amount} from ${added[0].collectedByName} is pending approval.`
+              );
+            }
+          }
+          return pendingCol;
+        });
+
       } catch (err) {
-        console.error("Error fetching products for notification:", err);
+        console.error("Error fetching system notifications:", err);
       }
     };
 
-    fetchProductsForNotifications();
+    fetchSystemNotifications();
 
-    // Set up an interval to refresh every 30 seconds
-    const interval = setInterval(fetchProductsForNotifications, 30000);
+    let refreshMs = 30000;
+    if (syncFrequency === '1m') refreshMs = 60000;
+    else if (syncFrequency === '5m') refreshMs = 300000;
+
+    const interval = setInterval(fetchSystemNotifications, refreshMs);
     return () => clearInterval(interval);
-  }, [currentUser, activeTab]);
+  }, [currentUser, activeTab, syncFrequency]);
 
   // Run on mount: Trigger database seed checks
   useEffect(() => {
@@ -744,6 +1040,13 @@ export default function App() {
         status: 'ACTIVE',
         createdAt: new Date().toISOString()
       };
+      if (rememberMe) {
+        localStorage.setItem('samira_remember_me', 'true');
+        localStorage.setItem('samira_remembered_username', inputUsername);
+      } else {
+        localStorage.setItem('samira_remember_me', 'false');
+        localStorage.removeItem('samira_remembered_username');
+      }
       localStorage.setItem('samira_current_user_name', localAdmin.name);
       setCurrentUser(localAdmin);
       setActiveTab('dashboard');
@@ -784,6 +1087,13 @@ export default function App() {
       });
 
       if (matchedUser) {
+        if (rememberMe) {
+          localStorage.setItem('samira_remember_me', 'true');
+          localStorage.setItem('samira_remembered_username', inputUsername);
+        } else {
+          localStorage.setItem('samira_remember_me', 'false');
+          localStorage.removeItem('samira_remembered_username');
+        }
         localStorage.setItem('samira_current_user_name', (matchedUser as any).name || (matchedUser as any).username || 'Admin');
         setCurrentUser(matchedUser);
         setActiveTab('dashboard');
@@ -1023,6 +1333,20 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Remember Me Checkbox (ইউজারনেম মনে রাখুন) */}
+                <div className="flex items-center justify-between pb-1">
+                  <label className="flex items-center space-x-2 text-xs font-semibold text-slate-400 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={rememberMe}
+                      onChange={(e) => setRememberMe(e.target.checked)}
+                      id="login-remember-me-checkbox"
+                      className="rounded border-slate-800 bg-slate-950 text-blue-500 focus:ring-blue-500/50 w-4 h-4 cursor-pointer"
+                    />
+                    <span>Remember Me (ইউজারনেম মনে রাখুন)</span>
+                  </label>
+                </div>
+
                 <button
                   type="submit"
                   id="login-submit-btn"
@@ -1061,17 +1385,28 @@ export default function App() {
 
   // Active Authenticated Navigation Routing Canvas wrapped in ViewErrorBoundary for mounting resilience
   const renderViewContent = () => {
+    const globalFilters = {
+      dateFrom: filterDateFrom,
+      dateTo: filterDateTo,
+      branch: filterBranch,
+      status: filterStatus
+    };
+
     switch (activeTab) {
       case 'dashboard':
         return (
           <ViewErrorBoundary viewName="DashboardView">
-            <DashboardView onQuickAction={(tab) => setActiveTab(tab)} userRole={currentUser.role} />
+            <DashboardView 
+              onQuickAction={(tab) => setActiveTab(tab)} 
+              userRole={currentUser.role} 
+              globalFilters={globalFilters} 
+            />
           </ViewErrorBoundary>
         );
       case 'customers':
         return (
           <ViewErrorBoundary viewName="CustomerView">
-            <CustomerView />
+            <CustomerView globalFilters={globalFilters} />
           </ViewErrorBoundary>
         );
       case 'suppliers':
@@ -1089,7 +1424,7 @@ export default function App() {
       case 'products':
         return (
           <ViewErrorBoundary viewName="ProductView">
-            <ProductView />
+            <ProductView globalFilters={globalFilters} />
           </ViewErrorBoundary>
         );
       case 'inventory':
@@ -1105,6 +1440,7 @@ export default function App() {
               userRole={currentUser.role}
               userId={currentUser.id}
               userName={currentUser.name}
+              globalFilters={globalFilters}
             />
           </ViewErrorBoundary>
         );
@@ -1163,7 +1499,7 @@ export default function App() {
       case 'reports':
         return (
           <ViewErrorBoundary viewName="ReportsView">
-            <ReportsView />
+            <ReportsView userRole={currentUser.role} />
           </ViewErrorBoundary>
         );
       case 'settings':
@@ -1175,6 +1511,16 @@ export default function App() {
               setTheme={(newTheme) => {
                 setTheme(newTheme);
                 localStorage.setItem('dms_theme', newTheme);
+              }}
+              syncFrequency={syncFrequency}
+              setSyncFrequency={(freq) => {
+                setSyncFrequency(freq);
+                localStorage.setItem('dms_sync_frequency', freq);
+              }}
+              brandPalette={brandPalette}
+              setBrandPalette={(palette) => {
+                setBrandPalette(palette);
+                localStorage.setItem('dms_brand_palette', palette);
               }}
             />
           </ViewErrorBoundary>
@@ -1218,9 +1564,14 @@ export default function App() {
             <span className="hidden md:inline-block font-extrabold text-slate-800 tracking-tight text-base">SAMIRA TRADERS (DMS)</span>
             <span className="md:hidden font-black text-sm text-slate-800">SAMIRA DMS</span>
             <span className="h-4 w-[1px] bg-slate-200 hidden md:inline-block"></span>
-            <span className="hidden lg:inline-block text-[11px] font-medium text-slate-400 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-100">
-              Logged in: <strong className="text-slate-600 font-bold">{currentUser.name}</strong> ({currentUser.role})
-            </span>
+            <div className="hidden lg:flex flex-col text-[11px] font-medium text-slate-400 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-100">
+              <div>
+                Logged in: <strong className="text-slate-600 font-bold">{currentUser.name}</strong> ({currentUser.role})
+              </div>
+              <div className="text-[9px] text-slate-400 mt-0.5 border-t border-slate-100 pt-0.5">
+                Last Active: <span className="font-semibold text-slate-500">{lastActiveTime ? formatTime(lastActiveTime) : `Session Start (${formatTime(sessionStartTime)})`}</span>
+              </div>
+            </div>
           </div>
 
           {/* Global Quick Search Bar */}
@@ -1311,32 +1662,188 @@ export default function App() {
             </span>
 
             {/* Notification Bell (Only for Admins/Managers) */}
-            {(currentUser.role === 'Super Admin' || currentUser.role === 'Manager') && (
-              <button
-                onClick={() => setIsNotificationDrawerOpen(true)}
-                id="bell-notification-btn"
-                className="relative p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-50 rounded-xl transition-all cursor-pointer border border-transparent hover:border-slate-100 group"
-                aria-label="View Stock Notifications"
-              >
-                <Bell className={`w-5.5 h-5.5 ${lowStockCount > 0 ? 'text-amber-500 animate-pulse' : 'text-slate-400'}`} />
-                {lowStockCount > 0 && (
-                  <span className="absolute top-1 right-1 flex h-4.5 w-4.5 items-center justify-center rounded-full bg-rose-500 text-[9px] font-black text-white ring-2 ring-white">
-                    {lowStockCount}
-                  </span>
-                )}
-              </button>
-            )}
+            {(currentUser.role === 'Super Admin' || currentUser.role === 'Manager') && (() => {
+              const totalCount = lowStockCount + outstandingPayments.length + pendingApprovals.length;
+              return (
+                <button
+                  onClick={() => setIsNotificationDrawerOpen(true)}
+                  id="bell-notification-btn"
+                  className="relative p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-50 rounded-xl transition-all cursor-pointer border border-transparent hover:border-slate-100 group"
+                  aria-label="View System Notifications"
+                >
+                  <Bell className={`w-5.5 h-5.5 ${totalCount > 0 ? 'text-amber-500 animate-pulse' : 'text-slate-400'}`} />
+                  {totalCount > 0 && (
+                    <span className="absolute top-1 right-1 flex h-4.5 w-4.5 items-center justify-center rounded-full bg-rose-500 text-[9px] font-black text-white ring-2 ring-white">
+                      {totalCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })()}
           </div>
         </div>
 
         {/* Dynamic View Panel */}
-        <div className="animate-fade-in" id="active-view-viewport">
+        <div className="animate-fade-in space-y-6" id="active-view-viewport">
+          {['dashboard', 'customers', 'products', 'sales'].includes(activeTab) && (
+            <div className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm flex flex-col gap-4 transition-all">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 bg-blue-50 text-blue-600 rounded-xl">
+                    <Filter className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-black tracking-wider uppercase text-slate-800">Dynamic List Filters</h3>
+                    <p className="text-[10px] text-slate-400">Narrow down records dynamically by date, branch, or status</p>
+                  </div>
+                </div>
+
+                {/* Badges showing active filters */}
+                <div className="flex flex-wrap items-center gap-2">
+                  {filterDateFrom && (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-lg text-[9.5px] font-bold bg-slate-50 text-slate-600 border border-slate-100">
+                      From: {filterDateFrom}
+                    </span>
+                  )}
+                  {filterDateTo && (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-lg text-[9.5px] font-bold bg-slate-50 text-slate-600 border border-slate-100">
+                      To: {filterDateTo}
+                    </span>
+                  )}
+                  {filterBranch !== 'All' && (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-lg text-[9.5px] font-bold bg-blue-50 text-blue-700 border border-blue-100">
+                      Branch: {filterBranch === 'head-office' ? 'Head Office' : (subDepots.find(d => d.id === filterBranch)?.name || filterBranch)}
+                    </span>
+                  )}
+                  {filterStatus !== 'All' && (
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-lg text-[9.5px] font-bold bg-amber-50 text-amber-700 border border-amber-100">
+                      Status: {filterStatus}
+                    </span>
+                  )}
+
+                  {(filterDateFrom || filterDateTo || filterBranch !== 'All' || filterStatus !== 'All') && (
+                    <button
+                      onClick={() => {
+                        setFilterDateFrom('');
+                        setFilterDateTo('');
+                        setFilterBranch('All');
+                        setFilterStatus('All');
+                      }}
+                      className="px-2 py-0.5 text-[9.5px] font-bold text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-all cursor-pointer border border-transparent hover:border-rose-100"
+                    >
+                      Reset All
+                    </button>
+                  )}
+
+                  <button
+                    onClick={() => setIsFilterDropdownOpen(!isFilterDropdownOpen)}
+                    id="toggle-filter-panel-btn"
+                    className={`px-3.5 py-1.5 text-xs font-bold rounded-xl transition-all flex items-center space-x-1.5 border cursor-pointer ${
+                      isFilterDropdownOpen
+                        ? 'bg-slate-900 border-slate-900 text-white shadow-md'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300'
+                    }`}
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5" />
+                    <span>{isFilterDropdownOpen ? 'Hide Filters' : 'Configure Filters'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Filter Dropdown panel */}
+              {isFilterDropdownOpen && (
+                <div className="border-t border-slate-100/80 pt-4 mt-1 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 animate-slide-down">
+                  {/* Date Range From */}
+                  <div className="space-y-1">
+                    <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider">Date From (তারিখ হতে)</label>
+                    <div className="relative">
+                      <Calendar className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-3 pointer-events-none" />
+                      <input
+                        type="date"
+                        value={filterDateFrom}
+                        onChange={(e) => setFilterDateFrom(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 text-slate-700 rounded-xl pl-9 pr-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500/20 focus:border-blue-500/50 font-medium"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Date Range To */}
+                  <div className="space-y-1">
+                    <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider">Date To (তারিখ পর্যন্ত)</label>
+                    <div className="relative">
+                      <Calendar className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-3 pointer-events-none" />
+                      <input
+                        type="date"
+                        value={filterDateTo}
+                        onChange={(e) => setFilterDateTo(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 text-slate-700 rounded-xl pl-9 pr-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500/20 focus:border-blue-500/50 font-medium"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Branch filter selection */}
+                  <div className="space-y-1">
+                    <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider">Branch Depot (শাখা ডিপো)</label>
+                    <div className="relative">
+                      <Building2 className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-3 pointer-events-none" />
+                      <select
+                        value={filterBranch}
+                        onChange={(e) => setFilterBranch(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 text-slate-700 rounded-xl pl-9 pr-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500/20 focus:border-blue-500/50 font-semibold cursor-pointer"
+                      >
+                        <option value="All">All Locations (সকল শাখা)</option>
+                        <option value="head-office">Head Office (প্রধান ডিপো)</option>
+                        {subDepots.map(sd => (
+                          <option key={sd.id} value={sd.id}>{sd.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Dynamic Status filter selection */}
+                  <div className="space-y-1">
+                    <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider">Status (অবস্থা)</label>
+                    <div className="relative">
+                      <Tag className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-3 pointer-events-none" />
+                      <select
+                        value={filterStatus}
+                        onChange={(e) => setFilterStatus(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 text-slate-700 rounded-xl pl-9 pr-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500/20 focus:border-blue-500/50 font-semibold cursor-pointer"
+                      >
+                        <option value="All">All Statuses (সকল অবস্থা)</option>
+                        {activeTab === 'sales' && (
+                          <>
+                            <option value="PAID">PAID (পরিশোধিত)</option>
+                            <option value="PARTIAL">PARTIAL (আংশিক পরিশোধিত)</option>
+                            <option value="DUE">DUE (বকেয়া)</option>
+                          </>
+                        )}
+                        {activeTab === 'products' && (
+                          <>
+                            <option value="IN_STOCK">In Stock (পর্যাপ্ত স্টক)</option>
+                            <option value="LOW_STOCK">Low Stock (কম স্টক সতর্কতা)</option>
+                          </>
+                        )}
+                        {activeTab === 'customers' && (
+                          <>
+                            <option value="WITH_DUES">With Dues (বকেয়া আছে)</option>
+                            <option value="NO_DUES">Paid / No Dues (বকেয়া মুক্ত)</option>
+                          </>
+                        )}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {renderViewContent()}
         </div>
 
       </main>
 
-      {/* Low Stock Notification Drawer / Center Overlay */}
+      {/* Comprehensive DMS Notification Drawer */}
       {isNotificationDrawerOpen && (
         <div className="fixed inset-0 z-50 overflow-hidden" id="notification-center-drawer">
           <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity" onClick={() => setIsNotificationDrawerOpen(false)} />
@@ -1344,86 +1851,257 @@ export default function App() {
           <div className="fixed inset-y-0 right-0 pl-10 max-w-full flex">
             <div className="w-screen max-w-md bg-white shadow-2xl flex flex-col h-full border-l border-slate-100 animate-slide-in">
               {/* Drawer Header */}
-              <div className="px-6 py-5 bg-gradient-to-r from-blue-900 to-blue-950 text-white flex items-center justify-between">
+              <div className="px-6 py-5 bg-gradient-to-r from-blue-900 to-blue-950 text-white flex items-center justify-between shadow-md">
                 <div className="flex items-center space-x-2.5">
-                  <Bell className="w-5 h-5 text-amber-400" />
+                  <Bell className="w-5 h-5 text-amber-400 animate-bounce" />
                   <div>
-                    <h2 className="text-sm font-black tracking-wider uppercase">Notification Center</h2>
-                    <p className="text-[10px] text-blue-200">SAMIRA TRADERS System Alerts</p>
+                    <h2 className="text-xs font-black tracking-widest uppercase">DMS Alerts & Notifications</h2>
+                    <p className="text-[10px] text-blue-200">Real-time terminal checks</p>
                   </div>
                 </div>
                 <button
                   onClick={() => setIsNotificationDrawerOpen(false)}
-                  className="p-1 rounded-lg hover:bg-blue-850 transition-colors text-blue-200 hover:text-white cursor-pointer focus:outline-none"
+                  className="p-1 rounded-lg hover:bg-blue-800 transition-colors text-blue-200 hover:text-white cursor-pointer focus:outline-none"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              {/* Drawer Content */}
-              <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-black uppercase text-slate-400 tracking-wider">Inventory Low Stock Alerts</span>
-                  <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-[10px] font-black rounded-full">
-                    {lowStockCount} Alerts
-                  </span>
-                </div>
-
-                {lowStockProducts.length === 0 ? (
-                  <div className="text-center py-12 space-y-3">
-                    <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center mx-auto border border-emerald-100">
-                      <Check className="w-6 h-6 text-emerald-500" />
-                    </div>
-                    <div>
-                      <p className="text-xs font-bold text-slate-700">All Stocks Healthy</p>
-                      <p className="text-[10px] text-slate-400">All products are currently above their reorder point thresholds.</p>
-                    </div>
+              {/* Mobile Push Notification Enablement Ribbon */}
+              {notificationPermission !== 'granted' && (
+                <div className="bg-amber-50 border-b border-amber-100 px-6 py-2.5 flex items-center justify-between text-amber-800">
+                  <div className="flex items-center space-x-2">
+                    <Smartphone className="w-4 h-4 text-amber-600 animate-pulse shrink-0" />
+                    <span className="text-[10px] font-bold">Enable mobile push alerts?</span>
                   </div>
-                ) : (
+                  <button
+                    onClick={requestNotificationPermission}
+                    className="bg-amber-600 hover:bg-amber-700 text-white text-[9px] font-extrabold px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
+                  >
+                    Grant Permission
+                  </button>
+                </div>
+              )}
+
+              {/* Category Tab Controllers */}
+              <div className="border-b border-slate-100 bg-slate-50 p-2 flex justify-between gap-1 shrink-0">
+                <button
+                  onClick={() => setNotificationActiveTab('low_stock')}
+                  className={`flex-1 py-2 text-center rounded-xl text-[10px] font-black transition-all cursor-pointer ${
+                    notificationActiveTab === 'low_stock'
+                      ? 'bg-white text-slate-800 shadow-sm border border-slate-100/50'
+                      : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  Low Stock ({lowStockCount})
+                </button>
+                <button
+                  onClick={() => setNotificationActiveTab('due_payments')}
+                  className={`flex-1 py-2 text-center rounded-xl text-[10px] font-black transition-all cursor-pointer ${
+                    notificationActiveTab === 'due_payments'
+                      ? 'bg-white text-slate-800 shadow-sm border border-slate-100/50'
+                      : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  Dues ({outstandingPayments.length})
+                </button>
+                <button
+                  onClick={() => setNotificationActiveTab('approvals')}
+                  className={`flex-1 py-2 text-center rounded-xl text-[10px] font-black transition-all cursor-pointer ${
+                    notificationActiveTab === 'approvals'
+                      ? 'bg-white text-slate-800 shadow-sm border border-slate-100/50'
+                      : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  Approvals ({pendingApprovals.length})
+                </button>
+              </div>
+
+              {/* Drawer Scrollable Content */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                {/* 1. LOW STOCK ACTIVE PANEL */}
+                {notificationActiveTab === 'low_stock' && (
                   <div className="space-y-3">
-                    {lowStockProducts.map((prod) => {
-                      const threshold = prod.reorderLevel !== undefined ? prod.reorderLevel : (prod.minimumStock !== undefined ? prod.minimumStock : 10);
-                      const isSevere = prod.stockCount <= threshold * 0.5;
-                      return (
+                    <div className="flex items-center justify-between text-[11px] font-black uppercase text-slate-400 tracking-wider">
+                      <span>Inventory Level Checks</span>
+                      <span>{lowStockCount} alert(s)</span>
+                    </div>
+
+                    {lowStockProducts.length === 0 ? (
+                      <div className="text-center py-16 space-y-3">
+                        <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center mx-auto border border-emerald-100">
+                          <Check className="w-6 h-6 text-emerald-500" />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold text-slate-700">All Stocks Healthy</p>
+                          <p className="text-[10px] text-slate-400">All warehouse products are above threshold levels.</p>
+                        </div>
+                      </div>
+                    ) : (
+                      lowStockProducts.map((prod) => {
+                        const threshold = prod.reorderLevel !== undefined ? prod.reorderLevel : (prod.minimumStock !== undefined ? prod.minimumStock : 10);
+                        const isSevere = prod.stockCount <= threshold * 0.5;
+                        return (
+                          <div
+                            key={prod.id}
+                            className={`p-4 rounded-2xl border transition-all flex flex-col gap-2.5 ${
+                              isSevere
+                                ? 'bg-rose-50/30 border-rose-100 hover:bg-rose-50/50'
+                                : 'bg-amber-50/20 border-amber-100 hover:bg-amber-50/45'
+                            }`}
+                          >
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <h4 className="text-xs font-black text-slate-800 leading-snug">{prod.name}</h4>
+                                <p className="text-[9.5px] text-slate-400 font-bold mt-0.5">{prod.companyName}</p>
+                              </div>
+                              <span className={`px-2 py-0.5 rounded-lg font-mono text-[9.5px] font-black shrink-0 ${
+                                isSevere ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                              }`}>
+                                {prod.stockCount} Pcs
+                              </span>
+                            </div>
+
+                            <div className="flex items-center justify-between text-[10px] border-t border-slate-100 pt-2 mt-0.5">
+                              <span className="text-slate-400 font-bold">Min Stock level: <strong className="text-slate-600 font-extrabold">{threshold} Pcs</strong></span>
+                              <span className={`font-black text-[9px] ${isSevere ? 'text-rose-600' : 'text-amber-600'}`}>
+                                {isSevere ? 'CRITICAL MINIMUM' : 'REORDER SUGGESTED'}
+                              </span>
+                            </div>
+
+                            <button
+                              onClick={() => {
+                                setIsNotificationDrawerOpen(false);
+                                setActiveTab('purchases');
+                              }}
+                              className="w-full bg-slate-900 hover:bg-slate-800 text-white text-[10px] font-extrabold py-2 rounded-xl text-center transition-all cursor-pointer shadow-sm"
+                            >
+                              Generate Reorder Purchase
+                            </button>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+
+                {/* 2. OUTSTANDING PAYMENTS ACTIVE PANEL */}
+                {notificationActiveTab === 'due_payments' && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between text-[11px] font-black uppercase text-slate-400 tracking-wider">
+                      <span>Outlet Dues & Terms</span>
+                      <span>{outstandingPayments.length} alert(s)</span>
+                    </div>
+
+                    {outstandingPayments.length === 0 ? (
+                      <div className="text-center py-16 space-y-3">
+                        <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center mx-auto border border-emerald-100">
+                          <Check className="w-6 h-6 text-emerald-500" />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold text-slate-700">Dues Ledger Balanced</p>
+                          <p className="text-[10px] text-slate-400">No invoices are currently nearing or past their due date.</p>
+                        </div>
+                      </div>
+                    ) : (
+                      outstandingPayments.map((inv) => (
                         <div
-                          key={prod.id}
-                          className={`p-3.5 rounded-xl border transition-all flex flex-col gap-2 ${
-                            isSevere
-                              ? 'bg-rose-50/40 border-rose-100 hover:bg-rose-50/60'
-                              : 'bg-amber-50/30 border-amber-100 hover:bg-amber-50/50'
-                          }`}
+                          key={inv.id}
+                          className="p-4 rounded-2xl border border-slate-100 hover:border-slate-200 bg-slate-50/30 hover:bg-slate-50/50 transition-all flex flex-col gap-2"
                         >
                           <div className="flex justify-between items-start">
                             <div>
-                              <h4 className="text-xs font-extrabold text-slate-800 leading-tight">{prod.name}</h4>
-                              <p className="text-[10px] text-slate-400 mt-0.5 font-medium">Brand: {prod.brand || 'General Brand'}</p>
+                              <h4 className="text-xs font-black text-slate-800 leading-snug">{inv.shopName}</h4>
+                              <p className="text-[9.5px] text-slate-400 font-bold mt-0.5">Memo: #{inv.invoiceNo} • {inv.companyName}</p>
                             </div>
-                            <span className={`px-2 py-0.5 rounded-md font-mono text-[10px] font-black shrink-0 ${
-                              isSevere ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
-                            }`}>
-                              {prod.stockCount} Pcs left
+                            <span className="px-2 py-0.5 rounded-lg bg-rose-50 text-rose-700 font-mono text-[9.5px] font-black shrink-0">
+                              ৳{inv.dueAmount} due
                             </span>
                           </div>
 
                           <div className="flex items-center justify-between text-[10px] border-t border-slate-100/60 pt-2 mt-0.5">
-                            <span className="text-slate-500">Reorder point: <strong className="text-slate-700">{threshold} Pcs</strong></span>
-                            <span className={`font-bold ${isSevere ? 'text-rose-600' : 'text-amber-600'}`}>
-                              {isSevere ? 'CRITICALLY LOW' : 'BELOW REORDER POINT'}
+                            <span className="text-slate-400 font-bold">
+                              Invoice date: <strong className="text-slate-600 font-extrabold">{inv.date}</strong>
+                            </span>
+                            <span className={`font-black text-[9px] px-1.5 py-0.5 rounded ${
+                              inv.overdue ? 'bg-rose-100 text-rose-800 animate-pulse' : 'bg-amber-100 text-amber-800'
+                            }`}>
+                              {inv.overdue ? `OVERDUE BY ${Math.abs(inv.dueDays)} DAYS` : `DUE IN ${inv.dueDays} DAYS`}
                             </span>
                           </div>
 
                           <button
                             onClick={() => {
                               setIsNotificationDrawerOpen(false);
-                              setActiveTab('purchases');
+                              setActiveTab('sales');
                             }}
-                            className="mt-1 w-full bg-slate-900 hover:bg-slate-800 text-white text-[10px] font-bold py-1.5 rounded-lg text-center transition-all cursor-pointer shadow-sm"
+                            className="w-full bg-slate-900 hover:bg-slate-800 text-white text-[10px] font-extrabold py-2 rounded-xl text-center transition-all cursor-pointer shadow-sm"
                           >
-                            Generate Reorder Purchase
+                            Open Sales & Invoice Module
                           </button>
                         </div>
-                      );
-                    })}
+                      ))
+                    )}
+                  </div>
+                )}
+
+                {/* 3. MANAGER APPROVALS ACTIVE PANEL */}
+                {notificationActiveTab === 'approvals' && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between text-[11px] font-black uppercase text-slate-400 tracking-wider">
+                      <span>Cashier Handovers</span>
+                      <span>{pendingApprovals.length} alert(s)</span>
+                    </div>
+
+                    {pendingApprovals.length === 0 ? (
+                      <div className="text-center py-16 space-y-3">
+                        <div className="w-12 h-12 bg-emerald-50 rounded-full flex items-center justify-center mx-auto border border-emerald-100">
+                          <Check className="w-6 h-6 text-emerald-500" />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold text-slate-700">Handovers Approved</p>
+                          <p className="text-[10px] text-slate-400">All field-rep collection transfers have been reviewed and approved.</p>
+                        </div>
+                      </div>
+                    ) : (
+                      pendingApprovals.map((col) => (
+                        <div
+                          key={col.id}
+                          className="p-4 rounded-2xl border border-slate-100 hover:border-slate-200 bg-slate-50/30 hover:bg-slate-50/50 transition-all flex flex-col gap-2"
+                        >
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <h4 className="text-xs font-black text-slate-800 leading-snug">৳{col.amount} Handover</h4>
+                              <p className="text-[9.5px] text-slate-400 font-bold mt-0.5">Shop: {col.shopName} • {col.companyName}</p>
+                            </div>
+                            <span className="px-2 py-0.5 rounded-lg bg-blue-50 text-blue-700 font-mono text-[9.5px] font-black shrink-0 uppercase">
+                              {col.status}
+                            </span>
+                          </div>
+
+                          <div className="flex flex-col text-[10px] border-t border-slate-100/60 pt-2 mt-0.5 space-y-1">
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-bold">Collected By:</span>
+                              <span className="text-slate-600 font-bold">{col.collectedByName}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-bold">Collection Date:</span>
+                              <span className="text-slate-600 font-bold">{col.date}</span>
+                            </div>
+                          </div>
+
+                          <button
+                            onClick={() => {
+                              setIsNotificationDrawerOpen(false);
+                              setActiveTab('collections');
+                            }}
+                            className="w-full bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-extrabold py-2 rounded-xl text-center transition-all cursor-pointer shadow-sm"
+                          >
+                            Verify & Approve Collection Handover
+                          </button>
+                        </div>
+                      ))
+                    )}
                   </div>
                 )}
               </div>
@@ -1435,9 +2113,9 @@ export default function App() {
                     setIsNotificationDrawerOpen(false);
                     setActiveTab('inventory');
                   }}
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-2.5 rounded-xl text-center transition-all cursor-pointer shadow-sm"
+                  className="w-full bg-slate-900 hover:bg-slate-800 text-white text-xs font-black py-3 rounded-xl text-center transition-all cursor-pointer shadow-sm"
                 >
-                  Go to Stock Management
+                  Configure Global Alert Thresholds
                 </button>
               </div>
             </div>

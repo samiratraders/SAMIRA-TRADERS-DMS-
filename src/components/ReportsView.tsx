@@ -21,7 +21,10 @@ import {
   ArrowUpDown,
   Filter,
   ArrowUpRight,
-  BarChart2
+  BarChart2,
+  FileDown,
+  Lock,
+  ShieldAlert
 } from 'lucide-react';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -35,7 +38,8 @@ import {
   Company, 
   SubDepotTransaction,
   CustomerLedgerEntry,
-  Purchase
+  Purchase,
+  UserRole
 } from '../types';
 import { 
   BarChart, 
@@ -55,8 +59,22 @@ import {
   Cell 
 } from 'recharts';
 
-export default function ReportsView() {
-  const [activeReport, setActiveReport] = useState<'sales' | 'collection' | 'stock' | 'profit' | 'expense' | 'dsr' | 'valuation' | 'ledger' | 'supplier'>('profit');
+interface ReportsViewProps {
+  userRole?: string;
+}
+
+export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewProps) {
+  const isAdmin = userRole === UserRole.SUPER_ADMIN || userRole === 'Super Admin' || userRole === UserRole.MANAGER || userRole === 'Manager';
+
+  const [activeReport, setActiveReport] = useState<'sales' | 'collection' | 'stock' | 'profit' | 'expense' | 'dsr' | 'valuation' | 'ledger' | 'supplier' | 'company'>(
+    isAdmin ? 'profit' : 'sales'
+  );
+
+  useEffect(() => {
+    if (!isAdmin && (activeReport === 'profit' || activeReport === 'expense')) {
+      setActiveReport('sales');
+    }
+  }, [isAdmin, activeReport]);
   const [loading, setLoading] = useState(true);
 
   // Raw data stores
@@ -440,6 +458,48 @@ export default function ReportsView() {
     }));
   };
 
+  const getSalesByProductChartData = () => {
+    const prodSales: { [prodName: string]: number } = {};
+    filteredInvoices.forEach(inv => {
+      inv.items.forEach(item => {
+        const name = item.name || 'Unknown Product';
+        prodSales[name] = (prodSales[name] || 0) + item.total;
+      });
+    });
+    return Object.entries(prodSales)
+      .map(([name, sales]) => ({ name, 'Sales Volume (৳)': sales }))
+      .sort((a, b) => b['Sales Volume (৳)'] - a['Sales Volume (৳)'])
+      .slice(0, 8);
+  };
+
+  const getDsrPerformanceChartData = () => {
+    const dsrMap: { [name: string]: { sales: number; collections: number } } = {};
+    
+    // Aggregate Sales from filteredInvoices
+    filteredInvoices.forEach(inv => {
+      if (inv.dsrName) {
+        const name = inv.dsrName;
+        if (!dsrMap[name]) dsrMap[name] = { sales: 0, collections: 0 };
+        dsrMap[name].sales += inv.grandTotal;
+      }
+    });
+
+    // Aggregate Collections from filteredCollections
+    filteredCollections.forEach(col => {
+      if (col.collectedByName) {
+        const name = col.collectedByName;
+        if (!dsrMap[name]) dsrMap[name] = { sales: 0, collections: 0 };
+        dsrMap[name].collections += col.amount;
+      }
+    });
+
+    return Object.entries(dsrMap).map(([name, data]) => ({
+      name,
+      'Sales (৳)': data.sales,
+      'Collections (৳)': data.collections
+    }));
+  };
+
   const getCollectionChartData = () => {
     const repData: { [rep: string]: number } = {};
     filteredCollections.forEach(col => {
@@ -478,6 +538,223 @@ export default function ReportsView() {
     }));
   };
 
+  const getCompanyReportData = () => {
+    let targetCompanies = companies;
+    if (selectedCompanyId) {
+      targetCompanies = companies.filter(c => c.id === selectedCompanyId);
+    }
+
+    return targetCompanies.map(comp => {
+      const compProducts = products.filter(p => p.companyId === comp.id);
+      const compInvoices = filteredInvoices.filter(i => i.companyId === comp.id);
+      const compCollections = filteredCollections.filter(c => c.companyId === comp.id);
+      const compPurchases = filteredPurchases.filter(p => p.companyId === comp.id);
+
+      const salesRevenue = compInvoices.reduce((sum, i) => sum + i.grandTotal, 0);
+      const collectionsAmount = compCollections.reduce((sum, c) => sum + c.amount, 0);
+      const purchasesAmount = compPurchases.reduce((sum, p) => sum + p.grandTotal, 0);
+      const stockValuation = compProducts.reduce((sum, p) => sum + (p.stockCount * p.purchasePrice), 0);
+      const customerDues = customers.reduce((sum, cust) => sum + (cust.dues?.[comp.id] || 0), 0);
+
+      return {
+        id: comp.id,
+        name: comp.name,
+        code: comp.code || 'CMP',
+        skuCount: compProducts.length,
+        salesRevenue,
+        collections: collectionsAmount,
+        purchases: purchasesAmount,
+        stockValuation,
+        customerDues
+      };
+    });
+  };
+
+  const getCompanyChartData = () => {
+    return getCompanyReportData().map(comp => ({
+      name: comp.name,
+      'Sales (৳)': comp.salesRevenue,
+      'Collections (৳)': comp.collections,
+      'Customer Dues (৳)': comp.customerDues
+    }));
+  };
+
+  const exportCSV = () => {
+    if (!isAdmin && (activeReport === 'profit' || activeReport === 'expense')) {
+      alert('Access Restricted: Profit & Loss and Expense report data is accessible to Administrator roles only.');
+      return;
+    }
+
+    let filename = `Samira_Traders_${activeReport.toUpperCase()}_Report_${new Date().toISOString().split('T')[0]}.csv`;
+    let rows: (string | number)[][] = [];
+
+    const escapeCSV = (val: any) => {
+      if (val === null || val === undefined) return '""';
+      const str = String(val).replace(/"/g, '""');
+      return `"${str}"`;
+    };
+
+    if (activeReport === 'sales') {
+      rows.push(['Invoice No', 'Date', 'Customer Shop', 'Owner Name', 'Company Brand', 'Route / Area', 'SubTotal (BDT)', 'Discount (BDT)', 'Grand Total (BDT)', 'Cash Received (BDT)', 'Balance Due (BDT)', 'Payment Method', 'Sales Rep (DSR)']);
+      sortedInvoices.forEach(inv => {
+        const cust = customers.find(c => c.id === inv.customerId);
+        rows.push([
+          inv.invoiceNo,
+          inv.date,
+          inv.shopName || '',
+          cust?.name || '',
+          inv.companyName || '',
+          inv.area || inv.route || '',
+          inv.subTotal || inv.grandTotal,
+          inv.discount || 0,
+          inv.grandTotal,
+          inv.paymentReceived,
+          inv.grandTotal - inv.paymentReceived,
+          inv.paymentMethod || 'CASH',
+          inv.dsrName || ''
+        ]);
+      });
+    } else if (activeReport === 'collection') {
+      rows.push(['Collection Receipt No', 'Date', 'Customer Shop', 'Company Ledger', 'Payment Method', 'Collected By (DSR)', 'Reference No', 'Amount Credited (BDT)', 'Status']);
+      sortedCollections.forEach(col => {
+        rows.push([
+          col.collectionNo,
+          col.date,
+          col.shopName || '',
+          col.companyName || '',
+          col.paymentMethod || '',
+          col.collectedByName || '',
+          col.referenceNo || '',
+          col.amount,
+          col.status || 'APPROVED'
+        ]);
+      });
+    } else if (activeReport === 'ledger') {
+      rows.push(['Reference No', 'Date', 'Customer Outlet', 'Company Brand', 'Transaction Type', 'Debit/Credit Amount (BDT)', 'Running Balance After (BDT)']);
+      sortedLedgers.forEach(entry => {
+        const cust = customers.find(c => c.id === entry.customerId);
+        rows.push([
+          entry.referenceNo,
+          entry.date,
+          cust?.shopName || cust?.name || 'Unknown Outlet',
+          entry.companyName || '',
+          entry.type,
+          entry.amount,
+          entry.balanceAfter
+        ]);
+      });
+    } else if (activeReport === 'supplier') {
+      rows.push(['Purchase Order No', 'Date', 'Supplier Distributor', 'Company Brand', 'Item Count', 'Grand Total (BDT)', 'Amount Paid (BDT)', 'Status']);
+      sortedPurchases.forEach(pur => {
+        rows.push([
+          pur.purchaseNo,
+          pur.date,
+          pur.supplierName || '',
+          pur.companyName || '',
+          pur.items?.length || 0,
+          pur.grandTotal,
+          pur.paymentPaid || 0,
+          pur.status || 'RECEIVED'
+        ]);
+      });
+    } else if (activeReport === 'company') {
+      rows.push(['Company Name', 'Company Code', 'Active SKUs', 'Sales Revenue (BDT)', 'Collections Credited (BDT)', 'Customer Dues (BDT)', 'Purchases Sourced (BDT)', 'Stock Valuation (BDT)']);
+      getCompanyReportData().forEach(comp => {
+        rows.push([
+          comp.name,
+          comp.code,
+          comp.skuCount,
+          comp.salesRevenue,
+          comp.collections,
+          comp.customerDues,
+          comp.purchases,
+          comp.stockValuation
+        ]);
+      });
+    } else if (activeReport === 'stock') {
+      rows.push(['Product Name', 'Pack Size', 'Company Brand', 'Category', 'Carton Size (Units)', 'Head Office Stock (Pcs)', 'Head Office Stock (Cartons)', 'Purchase Price (BDT)', 'Retail Price (BDT)', 'Stock Valuation (BDT)', 'Damage Stock (Pcs)']);
+      products
+        .filter(p => {
+          if (selectedCompanyId && p.companyId !== selectedCompanyId) return false;
+          if (selectedProductId && p.id !== selectedProductId) return false;
+          return true;
+        })
+        .forEach(p => {
+          rows.push([
+            p.name,
+            p.packSize || '',
+            p.companyName || '',
+            p.category || 'General',
+            p.cartonSize,
+            p.stockCount,
+            (p.stockCount / p.cartonSize).toFixed(1),
+            p.purchasePrice,
+            p.retailPrice,
+            p.purchasePrice * p.stockCount,
+            p.damageStock || 0
+          ]);
+        });
+    } else if (activeReport === 'profit') {
+      rows.push(['Financial Metric', 'Amount (BDT)']);
+      rows.push(['Total Sales Revenue', profitData.totalSalesRevenue]);
+      rows.push(['Cost of Goods Sold (COGS)', profitData.cogs]);
+      rows.push(['Gross Sales Margin', profitData.salesMargin]);
+      rows.push(['Sub-Depot Commission Income', profitData.subdepotCommissionIncome]);
+      rows.push(['Operating Expenditures (Expenses)', profitData.totalExp]);
+      rows.push(['Net Operating Profit', profitData.netProfit]);
+    } else if (activeReport === 'expense') {
+      rows.push(['Ledger Title', 'Date', 'Category', 'Description', 'Staff / DSR Name', 'Route / Area', 'Debit Amount (BDT)']);
+      sortedExpenses.forEach(exp => {
+        rows.push([
+          exp.title,
+          exp.date,
+          exp.category,
+          exp.description || '',
+          exp.staffName || '',
+          exp.routeName || '',
+          exp.amount
+        ]);
+      });
+    } else if (activeReport === 'dsr') {
+      rows.push(['Sales Rep (DSR) Name', 'Date', 'Memo Ref No', 'Customer Shop', 'Company Brand', 'Amount Credited (BDT)', 'Status']);
+      filteredCollections.forEach(col => {
+        rows.push([
+          col.collectedByName || 'Unassigned',
+          col.date,
+          col.collectionNo,
+          col.shopName || '',
+          col.companyName || '',
+          col.amount,
+          col.status || 'APPROVED'
+        ]);
+      });
+    } else if (activeReport === 'valuation') {
+      rows.push(['Metric / Section', 'Value / Amount (BDT)']);
+      rows.push([isValuationFiltered ? 'Period Total Sales Value' : "Today's Total Sales Value", valuationSalesVal]);
+      rows.push([isValuationFiltered ? 'Period Damage Return Value' : "Today's Damage Return Value", valuationDamageVal]);
+      rows.push([isValuationFiltered ? 'Period Closing Inventory Value' : 'Closing Inventory Sales Value', valuationClosingVal]);
+      rows.push([]);
+      rows.push(['DAMAGED ITEMS REGISTER']);
+      rows.push(['Product Name', 'Damaged Qty (Pcs)', 'Unit Purchase Rate (BDT)', 'Damaged Stock Value (BDT)']);
+      products
+        .filter(p => (p.damageStock || 0) > 0)
+        .forEach(p => {
+          rows.push([p.name, p.damageStock || 0, p.purchasePrice, (p.damageStock || 0) * p.purchasePrice]);
+        });
+    }
+
+    const csvContent = '\uFEFF' + rows.map(r => r.map(escapeCSV).join(',')).join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const getPLChartData = () => {
     return [
       { name: 'Revenue', amount: profitData.totalSalesRevenue },
@@ -494,30 +771,43 @@ export default function ReportsView() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Business Reports Suite</h2>
-          <p className="text-sm text-gray-500">Generate, audit, and print complete distribution performance reports</p>
+          <p className="text-sm text-gray-500">Generate, audit, export CSV, and print complete distribution performance reports</p>
         </div>
-        <button
-          onClick={handlePrint}
-          className="flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer"
-        >
-          <Printer className="w-4 h-4" />
-          <span>Print/Save PDF Report</span>
-        </button>
+        <div className="flex items-center space-x-3">
+          <button
+            onClick={exportCSV}
+            className="flex items-center justify-center space-x-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer"
+            title="Export report dataset to CSV spreadsheet"
+          >
+            <FileDown className="w-4 h-4" />
+            <span>Export CSV</span>
+          </button>
+          <button
+            onClick={handlePrint}
+            className="flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer"
+          >
+            <Printer className="w-4 h-4" />
+            <span>Print/Save PDF Report</span>
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}
       <div className="flex flex-wrap border-b border-gray-100 gap-1 bg-white p-1 rounded-xl shadow-sm border print:hidden">
         {[
-          { id: 'profit', label: 'Profit & Loss', icon: TrendingUp },
+          { id: 'profit', label: 'Profit & Loss', icon: TrendingUp, sensitive: true },
           { id: 'sales', label: 'Sales Journal', icon: FileText },
           { id: 'collection', label: 'Cash Collections', icon: Coins },
           { id: 'ledger', label: 'Customer Ledgers', icon: Users },
           { id: 'supplier', label: 'Supplier Purchases', icon: Truck },
+          { id: 'company', label: 'Company Performance', icon: Building2 },
           { id: 'stock', label: 'Depot Stock', icon: Warehouse },
-          { id: 'expense', label: 'Expenses Summary', icon: FileText },
+          { id: 'expense', label: 'Expenses Summary', icon: FileText, sensitive: true },
           { id: 'dsr', label: 'DSR Sheets', icon: UserCheck },
           { id: 'valuation', label: 'Inventory Valuation', icon: Warehouse },
-        ].map(tab => {
+        ]
+          .filter(tab => !tab.sensitive || isAdmin)
+          .map(tab => {
           const Icon = tab.icon;
           const isActive = activeReport === tab.id;
           return (
@@ -734,7 +1024,20 @@ export default function ReportsView() {
 
             {/* 1. Profit and Loss Report */}
             {activeReport === 'profit' && (
-              <div className="space-y-6">
+              !isAdmin ? (
+                <div className="bg-amber-50 border border-amber-200 text-amber-900 p-8 rounded-2xl flex items-center space-x-4 shadow-sm">
+                  <div className="p-3 bg-amber-100 text-amber-700 rounded-xl">
+                    <Lock className="w-8 h-8" />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-base text-amber-950">Access Restricted</h3>
+                    <p className="text-xs text-amber-800 mt-1">
+                      Profit & Loss performance statistics contain sensitive financial data and are restricted to Administrator roles only.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-6">
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-100 pb-2">
                   <div>
                     <h3 className="font-extrabold text-gray-900 text-lg">Profit & Loss Performance Statement</h3>
@@ -808,7 +1111,7 @@ export default function ReportsView() {
                   </div>
                 </div>
               </div>
-            )}
+            ))}
 
             {/* 2. Sales Journal Report */}
             {activeReport === 'sales' && (
@@ -820,20 +1123,39 @@ export default function ReportsView() {
                   </div>
                 </div>
 
-                {/* Sales Chart */}
+                {/* Sales Charts Grid */}
                 {getSalesChartData().length > 0 && (
-                  <div className="bg-slate-50/50 p-4 rounded-xl border border-slate-100 print:hidden">
-                    <p className="text-xs font-bold text-slate-700 uppercase mb-3">Daily Sales Trend</p>
-                    <div className="h-48 w-full">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={getSalesChartData()}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="date" />
-                          <YAxis />
-                          <Tooltip formatter={(value: any) => [`৳${value.toLocaleString()}`, 'Sales Volume']} />
-                          <Area type="monotone" dataKey="Sales Volume" stroke="#3b82f6" fill="#eff6ff" />
-                        </AreaChart>
-                      </ResponsiveContainer>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 print:hidden">
+                    {/* Line Chart: Sales Over Time */}
+                    <div className="bg-slate-50/50 p-4 rounded-xl border border-slate-100">
+                      <p className="text-xs font-bold text-slate-700 uppercase mb-3 font-sans tracking-wide">Daily Sales Trend (Sales over Time)</p>
+                      <div className="h-56 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={getSalesChartData()}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                            <XAxis dataKey="date" tick={{ fontSize: 10 }} stroke="#94a3b8" />
+                            <YAxis tick={{ fontSize: 10 }} stroke="#94a3b8" />
+                            <Tooltip formatter={(value: any) => [`৳${value.toLocaleString()}`, 'Sales Volume']} contentStyle={{ borderRadius: 8 }} />
+                            <Line type="monotone" dataKey="Sales Volume" stroke="#3b82f6" strokeWidth={3} dot={{ r: 4, strokeWidth: 1 }} activeDot={{ r: 6 }} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    {/* Bar Chart: Sales By Product */}
+                    <div className="bg-slate-50/50 p-4 rounded-xl border border-slate-100">
+                      <p className="text-xs font-bold text-slate-700 uppercase mb-3 font-sans tracking-wide">Top Products by Sales Volume</p>
+                      <div className="h-56 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={getSalesByProductChartData()} layout="vertical">
+                            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                            <XAxis type="number" tick={{ fontSize: 10 }} stroke="#94a3b8" />
+                            <YAxis dataKey="name" type="category" width={110} tick={{ fontSize: 8 }} stroke="#94a3b8" />
+                            <Tooltip formatter={(value: any) => [`৳${value.toLocaleString()}`, 'Sales']} contentStyle={{ borderRadius: 8 }} />
+                            <Bar dataKey="Sales Volume (৳)" fill="#8b5cf6" radius={[0, 4, 4, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1045,6 +1367,99 @@ export default function ReportsView() {
               </div>
             )}
 
+            {/* 5b. Company Performance Report */}
+            {activeReport === 'company' && (
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                  <div>
+                    <h3 className="font-extrabold text-gray-900 text-lg">Company & Manufacturer Performance Audit</h3>
+                    <p className="text-xs text-gray-400">Consolidated analytics by company partner ({companies.length} partner brands active)</p>
+                  </div>
+                </div>
+
+                {/* Company Metrics Overview Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div className="bg-slate-50 border p-3.5 rounded-xl">
+                    <span className="text-[10px] uppercase font-bold text-gray-400 block">Total Sales Revenue</span>
+                    <span className="text-lg font-black text-slate-900 font-mono">
+                      ৳{getCompanyReportData().reduce((s, c) => s + c.salesRevenue, 0).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="bg-slate-50 border p-3.5 rounded-xl">
+                    <span className="text-[10px] uppercase font-bold text-gray-400 block">Total Collections</span>
+                    <span className="text-lg font-black text-emerald-700 font-mono">
+                      ৳{getCompanyReportData().reduce((s, c) => s + c.collections, 0).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="bg-slate-50 border p-3.5 rounded-xl">
+                    <span className="text-[10px] uppercase font-bold text-gray-400 block">Outstanding Customer Dues</span>
+                    <span className="text-lg font-black text-amber-600 font-mono">
+                      ৳{getCompanyReportData().reduce((s, c) => s + c.customerDues, 0).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="bg-slate-50 border p-3.5 rounded-xl">
+                    <span className="text-[10px] uppercase font-bold text-gray-400 block">Depot Stock Valuation</span>
+                    <span className="text-lg font-black text-blue-900 font-mono">
+                      ৳{getCompanyReportData().reduce((s, c) => s + c.stockValuation, 0).toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Chart: Sales vs Collections vs Dues by Brand */}
+                {getCompanyChartData().length > 0 && (
+                  <div className="bg-slate-50/50 p-4 rounded-xl border border-slate-100 print:hidden">
+                    <p className="text-xs font-bold text-slate-700 uppercase mb-3">Brand Performance Comparison (Sales vs Collections vs Customer Dues)</p>
+                    <div className="h-60 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={getCompanyChartData()}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                          <YAxis tick={{ fontSize: 10 }} />
+                          <Tooltip formatter={(value: any) => [`৳${value.toLocaleString()}`, '']} />
+                          <Legend wrapperStyle={{ fontSize: 11 }} />
+                          <Bar dataKey="Sales (৳)" fill="#2563eb" radius={[4, 4, 0, 0]} />
+                          <Bar dataKey="Collections (৳)" fill="#10b981" radius={[4, 4, 0, 0]} />
+                          <Bar dataKey="Customer Dues (৳)" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
+
+                <div className="border border-slate-100 rounded-xl overflow-hidden">
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-slate-50 text-gray-500 font-bold">
+                      <tr>
+                        <th className="p-3">Company Brand Name</th>
+                        <th className="p-3 text-center">SKUs</th>
+                        <th className="p-3 text-right">Sales Revenue</th>
+                        <th className="p-3 text-right">Collections</th>
+                        <th className="p-3 text-right">Customer Dues</th>
+                        <th className="p-3 text-right">Sourcing Purchases</th>
+                        <th className="p-3 text-right">Stock Valuation</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {getCompanyReportData().map(comp => (
+                        <tr key={comp.id} className="hover:bg-slate-50/50 transition-colors">
+                          <td className="p-3">
+                            <p className="font-bold text-gray-950">{comp.name}</p>
+                            <p className="text-[10px] text-gray-400 font-mono">Code: {comp.code}</p>
+                          </td>
+                          <td className="p-3 text-center font-bold text-slate-600">{comp.skuCount} Products</td>
+                          <td className="p-3 text-right font-bold text-gray-950">৳{comp.salesRevenue.toLocaleString()}</td>
+                          <td className="p-3 text-right font-bold text-emerald-700">৳{comp.collections.toLocaleString()}</td>
+                          <td className="p-3 text-right font-black text-amber-600">৳{comp.customerDues.toLocaleString()}</td>
+                          <td className="p-3 text-right font-bold text-slate-700">৳{comp.purchases.toLocaleString()}</td>
+                          <td className="p-3 text-right font-black text-blue-900">৳{comp.stockValuation.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
             {/* 6. Depot Stock Report */}
             {activeReport === 'stock' && (
               <div className="space-y-4">
@@ -1127,7 +1542,20 @@ export default function ReportsView() {
 
             {/* 7. Expense Summary */}
             {activeReport === 'expense' && (
-              <div className="space-y-4">
+              !isAdmin ? (
+                <div className="bg-amber-50 border border-amber-200 text-amber-900 p-8 rounded-2xl flex items-center space-x-4 shadow-sm">
+                  <div className="p-3 bg-amber-100 text-amber-700 rounded-xl">
+                    <Lock className="w-8 h-8" />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-base text-amber-950">Access Restricted</h3>
+                    <p className="text-xs text-amber-800 mt-1">
+                      Operating Expenditure statements contain sensitive financial data and are restricted to Administrator roles only.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2">
                   <div>
                     <h3 className="font-extrabold text-gray-900 text-lg">Operating Expenditures Statement</h3>
@@ -1198,12 +1626,32 @@ export default function ReportsView() {
                   </table>
                 </div>
               </div>
-            )}
+            ))}
 
             {/* 8. DSR Sheets */}
             {activeReport === 'dsr' && (
               <div className="space-y-6">
                 <h3 className="font-extrabold text-gray-900 text-lg">Sales Representative Sheets (DSR)</h3>
+
+                {/* DSR Performance Comparison Chart */}
+                {getDsrPerformanceChartData().length > 0 && (
+                  <div className="bg-slate-50/50 p-4 rounded-xl border border-slate-100 print:hidden">
+                    <p className="text-xs font-bold text-slate-700 uppercase mb-3 font-sans tracking-wide">DSR Performance Comparison: Total Sales vs Cash Collections</p>
+                    <div className="h-64 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={getDsrPerformanceChartData()}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                          <XAxis dataKey="name" tick={{ fontSize: 10 }} stroke="#94a3b8" />
+                          <YAxis tick={{ fontSize: 10 }} stroke="#94a3b8" />
+                          <Tooltip formatter={(value: any) => [`৳${value.toLocaleString()}`, '']} contentStyle={{ borderRadius: 8 }} />
+                          <Legend wrapperStyle={{ fontSize: 11 }} />
+                          <Bar dataKey="Sales (৳)" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                          <Bar dataKey="Collections (৳)" fill="#10b981" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
                 
                 {/* Compile list of collections grouped by DSR */}
                 {Array.from(new Set(filteredCollections.map(c => c.collectedByName))).map(dsrName => {

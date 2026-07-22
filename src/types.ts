@@ -25,6 +25,7 @@ export interface UserProfile {
   outstandingShortage?: number; // Accumulated shortages/dues for DSR/Manager
   ledgerBalance?: number;
   createdAt: string;
+  lastActive?: string;
 }
 
 export interface Company {
@@ -58,6 +59,7 @@ export interface Customer {
   area: string;
   dues: { [companyId: string]: number }; // Company Wise Ledger
   totalDue: number;
+  subDepotId?: string; // Optional association with a sub-depot
   createdAt: string;
 }
 
@@ -187,6 +189,7 @@ export interface Collection {
   transferredToManager: boolean;
   approvedBy?: string;
   approvedByName?: string;
+  subDepotId?: string; // Optional association with a sub-depot
   createdAt: string;
 }
 
@@ -216,6 +219,7 @@ export interface Expense {
   routeName?: string;
   staffId?: string; // applicable if SALARY expense
   staffName?: string;
+  subDepotId?: string; // Optional association with a sub-depot
   createdAt: string;
 }
 

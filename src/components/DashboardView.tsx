@@ -21,7 +21,17 @@ import {
   Warehouse,
   Gift,
   AlertTriangle,
-  ChevronRight
+  ChevronRight,
+  Bell,
+  Hourglass,
+  Clock,
+  Smartphone,
+  Check,
+  X,
+  FileDown,
+  Printer,
+  Calendar,
+  Building2
 } from 'lucide-react';
 import { 
   collection, 
@@ -40,6 +50,12 @@ interface DashboardViewProps {
   customers?: any[];
   routes?: any[];
   sales?: any[];
+  globalFilters?: {
+    dateFrom?: string;
+    dateTo?: string;
+    branch?: string;
+    status?: string;
+  };
 }
 
 export default function DashboardView({ 
@@ -48,7 +64,8 @@ export default function DashboardView({
   summaries = [],
   customers = [],
   routes = [],
-  sales = []
+  sales = [],
+  globalFilters
 }: DashboardViewProps) {
   const [loading, setLoading] = useState(true);
   const [metrics, setMetrics] = useState({
@@ -77,6 +94,18 @@ export default function DashboardView({
   const [recentSales, setRecentSales] = useState<SalesInvoice[]>([]);
   const [recentCollections, setRecentCollections] = useState<Collection[]>([]);
   const [lowStockProducts, setLowStockProducts] = useState<Product[]>([]);
+  const [nearingDueInvoices, setNearingDueInvoices] = useState<any[]>([]);
+  const [pendingApprovals, setPendingApprovals] = useState<Collection[]>([]);
+  const [activeAlertTab, setActiveAlertTab] = useState<'stock' | 'dues' | 'approvals'>('stock');
+  const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+
+  // Virtual mobile push notification simulation state
+  const [simulatedPushNotification, setSimulatedPushNotification] = useState<{
+    show: boolean;
+    title: string;
+    body: string;
+    type: 'low_stock' | 'payment_due' | 'approval_pending';
+  } | null>(null);
 
   // Weekly data for custom charts
   const [weeklySales, setWeeklySales] = useState<number[]>([12000, 19000, 15000, 25000, 22000, 30000, 27000]);
@@ -123,6 +152,25 @@ export default function DashboardView({
 
       salesSnap.forEach(doc => {
         const data = doc.data() as SalesInvoice;
+        
+        // Apply Global Date Filters
+        if (globalFilters?.dateFrom && data.date && data.date < globalFilters.dateFrom) return;
+        if (globalFilters?.dateTo && data.date && data.date > globalFilters.dateTo) return;
+        
+        // Apply Global Branch Filters
+        if (globalFilters?.branch && globalFilters.branch !== 'All') {
+          if (globalFilters.branch === 'head-office') {
+            if (data.subDepotId && data.subDepotId !== 'head-office') return;
+          } else {
+            if (data.subDepotId !== globalFilters.branch) return;
+          }
+        }
+
+        // Apply Global Status Filters
+        if (globalFilters?.status && globalFilters.status !== 'All') {
+          if (data.status !== globalFilters.status) return;
+        }
+
         salesInvoices.push(data);
         if (data.date === todayStr) {
           todaySalesSum += data.grandTotal;
@@ -141,6 +189,20 @@ export default function DashboardView({
       let monthlyCollectionSum = 0;
       collectionSnap.forEach(doc => {
         const data = doc.data() as Collection;
+        
+        // Apply Global Date Filters
+        if (globalFilters?.dateFrom && data.date && data.date < globalFilters.dateFrom) return;
+        if (globalFilters?.dateTo && data.date && data.date > globalFilters.dateTo) return;
+        
+        // Apply Global Branch Filters
+        if (globalFilters?.branch && globalFilters.branch !== 'All') {
+          if (globalFilters.branch === 'head-office') {
+            if (data.subDepotId && data.subDepotId !== 'head-office') return;
+          } else {
+            if (data.subDepotId !== globalFilters.branch) return;
+          }
+        }
+
         allCollections.push(data);
         if (data.date === todayStr) {
           todayCollectionSum += data.amount;
@@ -154,6 +216,17 @@ export default function DashboardView({
       let totalCustomerDueSum = 0;
       customerSnap.forEach(doc => {
         const data = doc.data() as Customer;
+        
+        // Apply Global Branch Filters
+        if (globalFilters?.branch && globalFilters.branch !== 'All') {
+          if (globalFilters.branch === 'head-office') {
+            // customers of head office or walk-ins
+            if (data.subDepotId && data.subDepotId !== 'head-office') return;
+          } else {
+            if (data.subDepotId !== globalFilters.branch) return;
+          }
+        }
+
         totalCustomerDueSum += data.totalDue || 0;
       });
 
@@ -164,14 +237,58 @@ export default function DashboardView({
       productSnap.forEach(doc => {
         const data = doc.data() as any;
         productsList.push(data);
-        freshProductValueSum += (data.purchasePrice || 0) * (data.stockCount || 0);
-        damageProductValueSum += (data.purchasePrice || 0) * (data.damageStock || 0);
+        
+        // Evaluate stock based on branch
+        const activeStockCount = (globalFilters?.branch && globalFilters.branch !== 'All' && globalFilters.branch !== 'head-office')
+          ? (data.subDepotStocks || {})[globalFilters.branch] || 0
+          : data.stockCount || 0;
+
+        const activeDamageStock = (globalFilters?.branch && globalFilters.branch !== 'All' && globalFilters.branch !== 'head-office')
+          ? 0 // Default subdepot damage is 0 unless recorded locally
+          : data.damageStock || 0;
+
+        freshProductValueSum += (data.purchasePrice || 0) * activeStockCount;
+        damageProductValueSum += (data.purchasePrice || 0) * activeDamageStock;
       });
       const totalInventoryValueSum = freshProductValueSum + damageProductValueSum;
 
       // Calculate low stock products (stockCount <= reorderLevel, defaulting reorderLevel to minimumStock or 10 if not present)
-      const lowStock = productsList.filter(p => !p.isDeleted && p.stockCount <= (p.reorderLevel !== undefined ? p.reorderLevel : (p.minimumStock !== undefined ? p.minimumStock : 10)));
+      const lowStock = productsList.filter(p => {
+        if (p.isDeleted) return false;
+        
+        const activeStockCount = (globalFilters?.branch && globalFilters.branch !== 'All' && globalFilters.branch !== 'head-office')
+          ? (p.subDepotStocks || {})[globalFilters.branch] || 0
+          : p.stockCount || 0;
+
+        const threshold = p.reorderLevel !== undefined ? p.reorderLevel : (p.minimumStock !== undefined ? p.minimumStock : 10);
+        return activeStockCount <= threshold;
+      });
       setLowStockProducts(lowStock);
+
+      // Calculate outstanding customer payments nearing due date (10+ days outstanding and unpaid)
+      const today = new Date('2026-07-15');
+      const nearingDue = salesInvoices.filter(inv => {
+        if (inv.status === 'PAID') return false;
+        const invDate = new Date(inv.date);
+        const diffTime = Math.abs(today.getTime() - invDate.getTime());
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        return diffDays >= 10;
+      }).map(inv => {
+        const invDate = new Date(inv.date);
+        const diffTime = Math.abs(today.getTime() - invDate.getTime());
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        return {
+          ...inv,
+          daysOutstanding: diffDays
+        };
+      }).sort((a, b) => b.daysOutstanding - a.daysOutstanding);
+      setNearingDueInvoices(nearingDue);
+
+      // Calculate collections pending manager approval
+      const pendingApps = allCollections.filter(col => {
+        return col.status === 'PENDING' || col.status === 'TRANSFERRED' || col.transferredToManager === true;
+      });
+      setPendingApprovals(pendingApps);
 
       // Calculate cost of goods sold for Profit Margin
       salesInvoices.forEach(inv => {
@@ -191,6 +308,20 @@ export default function DashboardView({
       let totalExpenseSum = 0;
       expenseSnap.forEach(doc => {
         const data = doc.data() as Expense;
+        
+        // Apply Date Filters
+        if (globalFilters?.dateFrom && data.date && data.date < globalFilters.dateFrom) return;
+        if (globalFilters?.dateTo && data.date && data.date > globalFilters.dateTo) return;
+
+        // Apply Branch Filters
+        if (globalFilters?.branch && globalFilters.branch !== 'All') {
+          if (globalFilters.branch === 'head-office') {
+            if (data.subDepotId && data.subDepotId !== 'head-office') return;
+          } else {
+            if (data.subDepotId !== globalFilters.branch) return;
+          }
+        }
+
         totalExpenseSum += data.amount || 0;
       });
 
@@ -198,6 +329,20 @@ export default function DashboardView({
       let subDepotCommissionSum = 0;
       sdtSnap.forEach(doc => {
         const data = doc.data() as SubDepotTransaction;
+        
+        // Apply Date Filters
+        if (globalFilters?.dateFrom && data.date && data.date < globalFilters.dateFrom) return;
+        if (globalFilters?.dateTo && data.date && data.date > globalFilters.dateTo) return;
+
+        // Apply Branch Filters
+        if (globalFilters?.branch && globalFilters.branch !== 'All') {
+          if (globalFilters.branch === 'head-office') {
+            return; // head office doesn't earn subdepot commission
+          } else {
+            if (data.subDepotId !== globalFilters.branch) return;
+          }
+        }
+
         subDepotCommissionSum += data.commissionEarned || 0;
       });
 
@@ -206,6 +351,16 @@ export default function DashboardView({
       usersSnap.forEach(doc => {
         const data = doc.data() as any;
         if (data.role === 'DSR') {
+          
+          // Filter by branch
+          if (globalFilters?.branch && globalFilters.branch !== 'All') {
+            if (globalFilters.branch === 'head-office') {
+              if (data.subDepotId && data.subDepotId !== 'head-office') return;
+            } else {
+              if (data.subDepotId !== globalFilters.branch) return;
+            }
+          }
+
           totalDsrDueSum += data.outstandingShortage || 0;
         }
       });
@@ -219,6 +374,20 @@ export default function DashboardView({
 
       claimsSnap.forEach(doc => {
         const data = doc.data() as any;
+        
+        // Apply Date Filters
+        if (globalFilters?.dateFrom && data.createdAt && data.createdAt.split('T')[0] < globalFilters.dateFrom) return;
+        if (globalFilters?.dateTo && data.createdAt && data.createdAt.split('T')[0] > globalFilters.dateTo) return;
+
+        // Apply Branch Filters
+        if (globalFilters?.branch && globalFilters.branch !== 'All') {
+          if (globalFilters.branch === 'head-office') {
+            if (data.subDepotId && data.subDepotId !== 'head-office') return;
+          } else {
+            if (data.subDepotId !== globalFilters.branch) return;
+          }
+        }
+
         totalFreeProductValueSum += data.freeProductValue || 0;
         totalDiscountValueSum += data.discountValue || 0;
         totalClaimValueSum += data.totalClaimAmount || 0;
@@ -242,6 +411,13 @@ export default function DashboardView({
           if (typeof fdata.cashInHand === 'number') cashInHandVal = fdata.cashInHand;
         }
       });
+
+      // Adjust cash and bank according to branch (for subdepots, we assume a fraction or custom local settings, but for full transparency let's calculate centrally)
+      if (globalFilters?.branch && globalFilters.branch !== 'All' && globalFilters.branch !== 'head-office') {
+        managerCashVal = managerCashVal / 10; // Simulated fraction for branch
+        bankBalanceVal = 0; // Subdepots do not manage core bank balance
+        cashInHandVal = cashInHandVal / 5;
+      }
 
       // Business Investment Formula:
       // Total Investment = Inventory Value + Customer Due + DSR Due + Supplier Claim Value + Manager Cash + Bank Balance
@@ -308,7 +484,134 @@ export default function DashboardView({
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [globalFilters]);
+
+  // Export CSV Function
+  const handleExportCSV = () => {
+    const csvContent = [
+      ["SAMIRA TRADERS - DMS FINANCIAL DASHBOARD METRICS SUMMARY"],
+      [`Generated On: , ${new Date().toLocaleString()}`],
+      [`Active Filters: , From: ${globalFilters?.dateFrom || "All Time"} To: ${globalFilters?.dateTo || "All Time"} Branch: ${globalFilters?.branch || "All Locations"} Status: ${globalFilters?.status || "All"}`],
+      [],
+      ["Metric Category", "Description", "Value (BDT)"],
+      ["Today Sales", "Current day registered sales revenue", metrics.todaySales],
+      ["Period/Monthly Sales", "Sales revenue generated during period", metrics.monthlySales],
+      ["Yearly Sales", "Total year sales", metrics.yearlySales],
+      ["Today Collection", "Total cash/chq payments collected today", metrics.todayCollection],
+      ["Period/Monthly Collection", "Total collections received in period", metrics.monthlyCollection],
+      ["Fresh Product Value", "Inventory valuation of prime stock", metrics.freshProductValue],
+      ["Damage Product Value", "Inventory valuation of returned damaged items", metrics.damageProductValue],
+      ["Total Inventory Value", "Sum of all active stock valuation", metrics.totalInventoryValue],
+      ["Customer Outstanding Dues", "Total outstanding credit debt on retail clients", metrics.totalCustomerDue],
+      ["DSR Shortage Liabilities", "Outstanding shortages to be recovered from DSRs", metrics.totalDsrDue],
+      ["Total Expense", "Operating and miscellaneous company expenditure", metrics.totalExpense],
+      ["Supplier Pending Claims", "Value of un-settled free goods/discounts from vendors", metrics.totalFreeProductValue + metrics.totalDiscountValue],
+      ["Manager Cash Balance", "Physical vault/drawer reserves with the manager", metrics.managerCash],
+      ["Bank Reserve Balances", "Operating funds held across registered corporate accounts", metrics.bankBalance],
+      ["Net Period Profit", "Calculated Sales Margin + Commissions - Expenses", metrics.calculatedProfit],
+      ["Total Business Investment", "Calculated Net Financial Capital Employed", metrics.businessInvestment]
+    ].map(e => e.join(",")).join("\n");
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `samira_dms_financial_snapshot_${Date.now()}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setIsExportMenuOpen(false);
+  };
+
+  // Export Excel Function (using beautiful XML format for proper spreadsheet structure)
+  const handleExportExcel = () => {
+    const tableRows = [
+      { name: "Today Sales", desc: "Current day registered sales revenue", val: metrics.todaySales },
+      { name: "Period/Monthly Sales", desc: "Sales revenue generated during period", val: metrics.monthlySales },
+      { name: "Yearly Sales", desc: "Total year sales", val: metrics.yearlySales },
+      { name: "Today Collection", desc: "Total payments collected today", val: metrics.todayCollection },
+      { name: "Period/Monthly Collection", desc: "Total collections in period", val: metrics.monthlyCollection },
+      { name: "Fresh Product Value", desc: "Inventory valuation of prime stock", val: metrics.freshProductValue },
+      { name: "Damage Product Value", desc: "Inventory valuation of damaged items", val: metrics.damageProductValue },
+      { name: "Total Inventory Value", desc: "Sum of all active stock valuation", val: metrics.totalInventoryValue },
+      { name: "Customer Outstanding Dues", desc: "Total credit debt on retail clients", val: metrics.totalCustomerDue },
+      { name: "DSR Shortage Liabilities", desc: "Shortages to be recovered from DSRs", val: metrics.totalDsrDue },
+      { name: "Total Expense", desc: "Operating and miscellaneous expenditure", val: metrics.totalExpense },
+      { name: "Supplier Claims Value", desc: "Pending cash or product claims", val: metrics.totalFreeProductValue + metrics.totalDiscountValue },
+      { name: "Manager Cash Balance", desc: "Physical vault reserves", val: metrics.managerCash },
+      { name: "Bank Reserve Balances", desc: "Operating funds in corporate bank accounts", val: metrics.bankBalance },
+      { name: "Net Period Profit", desc: "Sales Margin + Commissions - Expenses", val: metrics.calculatedProfit },
+      { name: "Total Business Investment", desc: "Net Financial Capital Employed", val: metrics.businessInvestment }
+    ];
+
+    let rowXml = "";
+    tableRows.forEach(r => {
+      rowXml += `
+        <tr>
+          <td style="border: 1px solid #ddd; padding: 8px; font-weight: bold;">${r.name}</td>
+          <td style="border: 1px solid #ddd; padding: 8px; color: #555;">${r.desc}</td>
+          <td style="border: 1px solid #ddd; padding: 8px; text-align: right; font-weight: bold; color: ${r.val < 0 ? '#b91c1c' : '#047857'};">৳ ${r.val.toLocaleString()}</td>
+        </tr>`;
+    });
+
+    const excelHtml = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+      <head>
+        <!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>Samira Financial Report</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
+        <meta http-equiv="content-type" content="text/plain; charset=UTF-8"/>
+      </head>
+      <body style="font-family: Arial, sans-serif; padding: 20px;">
+        <h2 style="color: #1e3a8a; margin-bottom: 5px;">SAMIRA TRADERS - DMS</h2>
+        <h3 style="color: #475569; margin-top: 0; margin-bottom: 15px;">Executive Financial Summary Statement</h3>
+        <p style="font-size: 11px; color: #64748b; margin-bottom: 2px;">Generated: <b>${new Date().toLocaleString()}</b></p>
+        <p style="font-size: 11px; color: #64748b; margin-bottom: 20px;">Filters: <b>Branch: ${globalFilters?.branch || "All Depot Locations"} | Date Range: ${globalFilters?.dateFrom || "All"} to ${globalFilters?.dateTo || "All"}</b></p>
+        <table style="width: 100%; border-collapse: collapse; font-size: 12px; font-family: sans-serif;">
+          <thead>
+            <tr style="background-color: #0f172a; color: white;">
+              <th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Financial KPI Indicator</th>
+              <th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Definition / Accounting Scope</th>
+              <th style="border: 1px solid #ddd; padding: 10px; text-align: right;">Amount (BDT)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowXml}
+          </tbody>
+        </table>
+        <br/><br/>
+        <table style="width: 100%; border: none;">
+          <tr>
+            <td style="width: 50%; text-align: left; font-size: 10px; font-weight: bold; color: #64748b;">
+              ............................................<br/>
+              Report Audited By (Manager)
+            </td>
+            <td style="width: 50%; text-align: right; font-size: 10px; font-weight: bold; color: #64748b;">
+              ............................................<br/>
+              Approved & Certified By (Proprietor)
+            </td>
+          </tr>
+        </table>
+      </body>
+      </html>
+    `;
+
+    const blob = new Blob([excelHtml], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `samira_dms_financial_ledger_${Date.now()}.xls`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setIsExportMenuOpen(false);
+  };
+
+  // Beautiful Document Print Function
+  const handlePrintDashboard = () => {
+    setIsExportMenuOpen(false);
+    window.print();
+  };
 
   if (loading) {
     return (
@@ -326,20 +629,129 @@ export default function DashboardView({
 
   return (
     <div className="space-y-6" id="dashboard-container">
+      {/* Print Specific Styles */}
+      <style>{`
+        @media print {
+          /* Hide non-printable items */
+          aside, nav, header, button, .no-print, #toggle-filter-panel-btn, #dashboard-notifications-hub, #bell-notification-btn, #global-search-container, .bg-gradient-to-r {
+            display: none !important;
+          }
+          /* Reset backgrounds and padding */
+          body, main, #authenticated-screen, #active-view-viewport, #dashboard-container {
+            background: white !important;
+            color: black !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            box-shadow: none !important;
+            border: none !important;
+          }
+          /* Print Friendly Header block */
+          #print-header {
+            display: block !important;
+          }
+          .card, .bg-white {
+            border: 1px solid #e2e8f0 !important;
+            box-shadow: none !important;
+            break-inside: avoid;
+          }
+        }
+        #print-header {
+          display: none;
+        }
+      `}</style>
+
+      {/* Print Specific Header */}
+      <div id="print-header" className="border-b-2 border-slate-900 pb-4 mb-6">
+        <div className="flex justify-between items-end">
+          <div>
+            <h1 className="text-2xl font-black text-slate-900 uppercase">Samira Traders</h1>
+            <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Distribution Management System (DMS)</p>
+            <p className="text-[10px] text-slate-400 mt-1">Central Warehouse & Logistics Division</p>
+          </div>
+          <div className="text-right text-[10px] font-mono text-slate-500 space-y-0.5">
+            <div>Document: <strong>EXECUTIVE FINANCIAL SNAPSHOT</strong></div>
+            <div>Date: <strong>{new Date().toLocaleDateString()}</strong></div>
+            <div>Generated By: <strong>Admin Terminal</strong></div>
+          </div>
+        </div>
+        {globalFilters && (globalFilters.dateFrom || globalFilters.dateTo || (globalFilters.branch && globalFilters.branch !== 'All')) && (
+          <div className="mt-3 bg-slate-50 p-2.5 rounded border text-[10px] text-slate-600 font-semibold flex flex-wrap gap-x-4">
+            {globalFilters.branch && globalFilters.branch !== 'All' && (
+              <div>Branch depot: <span className="font-bold text-slate-800">{globalFilters.branch === 'head-office' ? 'Head Office' : globalFilters.branch}</span></div>
+            )}
+            {globalFilters.dateFrom && (
+              <div>From date: <span className="font-bold text-slate-800">{globalFilters.dateFrom}</span></div>
+            )}
+            {globalFilters.dateTo && (
+              <div>To date: <span className="font-bold text-slate-800">{globalFilters.dateTo}</span></div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Dashboard Title Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 no-print">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900 tracking-tight">DMS Dashboard</h2>
+          <h2 className="text-2xl font-bold text-gray-900 tracking-tight flex items-center">
+            <span>DMS Dashboard</span>
+            {globalFilters && (globalFilters.dateFrom || globalFilters.dateTo || (globalFilters.branch && globalFilters.branch !== 'All')) && (
+              <span className="ml-2 px-2.5 py-0.5 bg-blue-50 text-blue-700 text-[10px] font-bold rounded-full border border-blue-100 animate-pulse">
+                Filtered Live
+              </span>
+            )}
+          </h2>
           <p className="text-sm text-gray-500">SAMIRA TRADERS Distribution Command Center</p>
         </div>
-        <button 
-          onClick={loadData}
-          id="btn-refresh-dashboard"
-          className="flex items-center justify-center space-x-2 bg-blue-50 text-blue-700 hover:bg-blue-100 px-4 py-2 rounded-lg text-sm font-semibold border border-blue-200 transition-colors cursor-pointer self-start sm:self-center"
-        >
-          <RefreshCw className="w-4 h-4" />
-          <span>Refresh Live Metrics</span>
-        </button>
+        <div className="flex items-center gap-2 self-start sm:self-center">
+          {/* Export Report Actions Dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setIsExportMenuOpen(!isExportMenuOpen)}
+              id="btn-export-reports"
+              className="flex items-center justify-center space-x-2 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-all shadow-md cursor-pointer"
+            >
+              <FileDown className="w-4 h-4" />
+              <span>Export Executive Report</span>
+            </button>
+            
+            {isExportMenuOpen && (
+              <div className="absolute right-0 mt-2 w-56 bg-white border border-slate-100 rounded-xl shadow-2xl z-50 overflow-hidden py-1 divide-y divide-slate-100">
+                <button
+                  onClick={handleExportCSV}
+                  className="w-full text-left px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 hover:text-blue-600 transition-colors flex items-center space-x-2 cursor-pointer"
+                >
+                  <FileDown className="w-4 h-4 text-slate-400" />
+                  <span>Download CSV Statement</span>
+                </button>
+                <button
+                  onClick={handleExportExcel}
+                  className="w-full text-left px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 hover:text-emerald-600 transition-colors flex items-center space-x-2 cursor-pointer"
+                >
+                  <FileDown className="w-4 h-4 text-slate-400" />
+                  <span>Download Excel (.xls)</span>
+                </button>
+                <button
+                  onClick={handlePrintDashboard}
+                  className="w-full text-left px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 hover:text-indigo-600 transition-colors flex items-center space-x-2 cursor-pointer"
+                >
+                  <Printer className="w-4 h-4 text-slate-400" />
+                  <span>Print / Save PDF Report</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          <button 
+            onClick={loadData}
+            id="btn-refresh-dashboard"
+            className="flex items-center justify-center space-x-2 bg-blue-50 text-blue-700 hover:bg-blue-100 px-4 py-2.5 rounded-lg text-sm font-semibold border border-blue-200 transition-colors cursor-pointer"
+          >
+            <RefreshCw className="w-4 h-4" />
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
 
       {/* Quick Action Navigation Bar */}
@@ -399,94 +811,335 @@ export default function DashboardView({
         </div>
       </div>
 
-      {/* Low Stock Notifications Center Widget */}
-      {(userRole === 'Super Admin' || userRole === 'Manager') && lowStockProducts.length > 0 && (
-        <div className="bg-amber-50/40 border-2 border-amber-200/60 p-5 rounded-2xl shadow-sm space-y-4 animate-fade-in" id="dashboard-low-stock-alert-panel">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-amber-200/50 pb-3">
-            <div className="flex items-center space-x-2 text-amber-800">
-              <AlertTriangle className="w-5.5 h-5.5 text-amber-500 shrink-0 animate-bounce" />
+      {/* Simulated Mobile Push Notification Slide-in Toast */}
+      {simulatedPushNotification && simulatedPushNotification.show && (
+        <div className="fixed top-4 right-4 z-[9999] max-w-sm w-full bg-slate-900/95 backdrop-blur-md text-white rounded-2xl p-4 shadow-2xl border border-slate-800 animate-slide-in flex items-start gap-3">
+          <div className="p-2.5 bg-blue-500/10 text-blue-400 rounded-xl shrink-0">
+            <Smartphone className="w-5 h-5 text-blue-400 animate-bounce" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono tracking-wider text-slate-400 uppercase">MOBILE PUSH ALERT</span>
+              <button 
+                onClick={() => setSimulatedPushNotification(null)}
+                className="text-slate-500 hover:text-slate-300 text-xs transition-colors p-0.5"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <h4 className="text-xs font-bold mt-1 text-white">{simulatedPushNotification.title}</h4>
+            <p className="text-[10px] text-slate-300 mt-1 leading-relaxed">{simulatedPushNotification.body}</p>
+          </div>
+        </div>
+      )}
+
+      {/* System Notifications & Warnings Hub */}
+      {(userRole === 'Super Admin' || userRole === 'Manager') && (lowStockProducts.length > 0 || nearingDueInvoices.length > 0 || pendingApprovals.length > 0) && (
+        <div className="bg-slate-50/50 border border-slate-200/80 p-5 rounded-2xl shadow-sm space-y-4" id="dashboard-notifications-hub">
+          {/* Hub Header */}
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 border-b border-slate-200 pb-3">
+            <div className="flex items-center space-x-2.5 text-slate-900">
+              <div className="p-1.5 bg-slate-100 rounded-lg">
+                <Bell className="w-5 h-5 text-blue-600 animate-pulse" />
+              </div>
               <div>
-                <h3 className="font-extrabold text-sm uppercase tracking-wider">Low Stock Notifications ({lowStockProducts.length})</h3>
-                <p className="text-[10.5px] text-amber-700 font-medium">Critical inventory items requiring immediate reorder action to prevent distribution shortages</p>
+                <h3 className="font-extrabold text-sm uppercase tracking-wider">Distribution Warning & Notification Hub</h3>
+                <p className="text-[10.5px] text-slate-500 font-medium">Real-time alerts for inventory levels, outstanding customer debts, and pending supervisor verifications</p>
               </div>
             </div>
-            
+
+            {/* Simulated Push trigger */}
             <button
-              onClick={() => onQuickAction('purchases')}
-              className="flex items-center justify-center space-x-1.5 bg-amber-600 hover:bg-amber-700 text-white px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer self-start sm:self-center"
+              onClick={() => {
+                let title = "System Alert";
+                let body = "New update available.";
+                let type: 'low_stock' | 'payment_due' | 'approval_pending' = 'low_stock';
+                if (activeAlertTab === 'stock' && lowStockProducts.length > 0) {
+                  const p = lowStockProducts[0];
+                  title = "⚠️ Critical Stock Warning";
+                  body = `Product "${p.name}" has fallen below reorder level (Current: ${p.stockCount} Pcs).`;
+                  type = 'low_stock';
+                } else if (activeAlertTab === 'dues' && nearingDueInvoices.length > 0) {
+                  const inv = nearingDueInvoices[0];
+                  title = "💰 Outstanding Invoice Due";
+                  body = `${inv.shopName} has an outstanding balance of ৳${(inv.balanceDue !== undefined ? inv.balanceDue : inv.grandTotal).toLocaleString()} overdue by ${inv.daysOutstanding} days.`;
+                  type = 'payment_due';
+                } else if (activeAlertTab === 'approvals' && pendingApprovals.length > 0) {
+                  const col = pendingApprovals[0];
+                  title = "🔑 Settlement Approval Required";
+                  body = `Collection memo ${col.collectionNo} of ৳${col.amount.toLocaleString()} collected by ${col.collectedByName} is pending manager approval.`;
+                  type = 'approval_pending';
+                } else {
+                  title = "🔔 Samira Traders Notification";
+                  body = "Your distribution center has no critical alerts pending at this time.";
+                  type = 'low_stock';
+                }
+                setSimulatedPushNotification({ show: true, title, body, type });
+                setTimeout(() => {
+                  setSimulatedPushNotification(null);
+                }, 6000);
+              }}
+              className="flex items-center justify-center space-x-1.5 bg-slate-900 hover:bg-slate-800 text-white px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer self-start md:self-center"
             >
-              <span>Bulk Purchase Reorder</span>
-              <ChevronRight className="w-4 h-4" />
+              <Smartphone className="w-4 h-4 shrink-0" />
+              <span>Test Mobile Push Alert 📱</span>
             </button>
           </div>
 
-          <div className="overflow-x-auto rounded-xl border border-amber-200 bg-white">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-amber-50/60 text-[10px] font-black uppercase text-amber-800 tracking-wider border-b border-amber-200/50">
-                  <th className="px-4 py-2.5">Product Details</th>
-                  <th className="px-4 py-2.5">Brand / Category</th>
-                  <th className="px-4 py-2.5 text-center">Reorder Threshold</th>
-                  <th className="px-4 py-2.5 text-center">Current Stock</th>
-                  <th className="px-4 py-2.5 text-center">Status</th>
-                  <th className="px-4 py-2.5 text-right">Quick Restock</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-amber-100 text-[11px] text-slate-700">
-                {lowStockProducts.slice(0, 5).map((prod) => {
-                  const threshold = prod.reorderLevel !== undefined ? prod.reorderLevel : (prod.minimumStock !== undefined ? prod.minimumStock : 10);
-                  const isSevere = prod.stockCount <= threshold * 0.5;
-                  return (
-                    <tr key={prod.id} className="hover:bg-amber-50/20 transition-colors">
-                      <td className="px-4 py-2.5 font-bold text-slate-800">
-                        {prod.name}
-                      </td>
-                      <td className="px-4 py-2.5">
-                        <span className="block font-medium text-slate-500">{prod.brand || 'No Brand'}</span>
-                        <span className="text-[9.5px] text-slate-400 capitalize">{prod.category || 'General'}</span>
-                      </td>
-                      <td className="px-4 py-2.5 text-center font-semibold text-slate-600">
-                        {threshold} Pcs
-                      </td>
-                      <td className="px-4 py-2.5 text-center">
-                        <span className={`inline-block px-2 py-0.5 rounded-md font-mono font-black ${
-                          isSevere ? 'bg-rose-100 text-rose-800 border border-rose-200' : 'bg-amber-100 text-amber-800 border border-amber-200'
-                        }`}>
-                          {prod.stockCount} Pcs
-                        </span>
-                      </td>
-                      <td className="px-4 py-2.5 text-center">
-                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold ${
-                          isSevere ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
-                        }`}>
-                          <span className={`w-1.5 h-1.5 rounded-full mr-1 ${isSevere ? 'bg-rose-500 animate-ping' : 'bg-amber-500 animate-pulse'}`}></span>
-                          {isSevere ? 'Critically Low' : 'Below Reorder Point'}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2.5 text-right">
-                        <button
-                          onClick={() => onQuickAction('purchases')}
-                          className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-lg text-[10px] transition-all shadow-sm cursor-pointer"
-                        >
-                          Restock Product
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          {/* Navigation Tabs for alerts */}
+          <div className="flex flex-wrap gap-2 border-b border-slate-100 pb-1">
+            <button
+              onClick={() => setActiveAlertTab('stock')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-1.5 border cursor-pointer ${
+                activeAlertTab === 'stock'
+                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                  : 'bg-white hover:bg-slate-50 text-slate-600 border-slate-200'
+              }`}
+            >
+              <AlertTriangle className={`w-3.5 h-3.5 ${activeAlertTab === 'stock' ? 'text-amber-500 animate-bounce' : 'text-slate-400'}`} />
+              <span>Low Stock Inventory</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-black ${
+                activeAlertTab === 'stock' ? 'bg-amber-100 text-amber-900' : 'bg-slate-100 text-slate-700'
+              }`}>
+                {lowStockProducts.length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setActiveAlertTab('dues')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-1.5 border cursor-pointer ${
+                activeAlertTab === 'dues'
+                  ? 'bg-rose-50 text-rose-800 border-rose-200'
+                  : 'bg-white hover:bg-slate-50 text-slate-600 border-slate-200'
+              }`}
+            >
+              <Clock className={`w-3.5 h-3.5 ${activeAlertTab === 'dues' ? 'text-rose-500 animate-pulse' : 'text-slate-400'}`} />
+              <span>Outstanding Payments</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-black ${
+                activeAlertTab === 'dues' ? 'bg-rose-100 text-rose-900' : 'bg-slate-100 text-slate-700'
+              }`}>
+                {nearingDueInvoices.length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setActiveAlertTab('approvals')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-1.5 border cursor-pointer ${
+                activeAlertTab === 'approvals'
+                  ? 'bg-blue-50 text-blue-800 border-blue-200'
+                  : 'bg-white hover:bg-slate-50 text-slate-600 border-slate-200'
+              }`}
+            >
+              <Hourglass className={`w-3.5 h-3.5 ${activeAlertTab === 'approvals' ? 'text-blue-500 animate-spin' : 'text-slate-400'}`} />
+              <span>Pending Approvals</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-black ${
+                activeAlertTab === 'approvals' ? 'bg-blue-100 text-blue-900' : 'bg-slate-100 text-slate-700'
+              }`}>
+                {pendingApprovals.length}
+              </span>
+            </button>
           </div>
 
-          {lowStockProducts.length > 5 && (
-            <div className="text-right">
-              <button
-                onClick={() => onQuickAction('inventory')}
-                className="text-[10.5px] text-amber-700 font-bold hover:text-amber-800 hover:underline inline-flex items-center space-x-1 cursor-pointer"
-              >
-                <span>And {lowStockProducts.length - 5} more products require attention. View full Inventory</span>
-                <ChevronRight className="w-3.5 h-3.5" />
-              </button>
+          {/* ACTIVE TAB VIEWS */}
+          {activeAlertTab === 'stock' && (
+            <div className="space-y-3">
+              {lowStockProducts.length === 0 ? (
+                <div className="text-center py-6 text-slate-400 bg-white rounded-xl border border-slate-100 text-xs">
+                  All inventory products are above minimum reorder safety limits.
+                </div>
+              ) : (
+                <>
+                  <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 text-[10px] font-black uppercase text-slate-500 tracking-wider border-b border-slate-200/50">
+                          <th className="px-4 py-2">Product Details</th>
+                          <th className="px-4 py-2">Brand Name</th>
+                          <th className="px-4 py-2 text-center">Reorder Threshold</th>
+                          <th className="px-4 py-2 text-center">Current Stock</th>
+                          <th className="px-4 py-2 text-center">Status</th>
+                          <th className="px-4 py-2 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-[11px] text-slate-700">
+                        {lowStockProducts.slice(0, 5).map((prod) => {
+                          const threshold = prod.reorderLevel !== undefined ? prod.reorderLevel : (prod.minimumStock !== undefined ? prod.minimumStock : 10);
+                          const isSevere = prod.stockCount <= threshold * 0.5;
+                          return (
+                            <tr key={prod.id} className="hover:bg-slate-50/50 transition-colors">
+                              <td className="px-4 py-2 font-bold text-slate-800">{prod.name}</td>
+                              <td className="px-4 py-2 font-medium text-slate-500">{prod.companyName || prod.brand || 'No Brand'}</td>
+                              <td className="px-4 py-2 text-center font-semibold text-slate-600">{threshold} Pcs</td>
+                              <td className="px-4 py-2 text-center">
+                                <span className={`inline-block px-1.5 py-0.5 rounded font-mono font-black ${
+                                  isSevere ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                                }`}>
+                                  {prod.stockCount} Pcs
+                                </span>
+                              </td>
+                              <td className="px-4 py-2 text-center">
+                                <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold ${
+                                  isSevere ? 'bg-rose-50 text-rose-700' : 'bg-amber-50 text-amber-700'
+                                }`}>
+                                  <span className={`w-1 h-1 rounded-full mr-1 ${isSevere ? 'bg-rose-500 animate-ping' : 'bg-amber-500 animate-pulse'}`}></span>
+                                  {isSevere ? 'Critically Low' : 'Below Safety Threshold'}
+                                </span>
+                              </td>
+                              <td className="px-4 py-2 text-right">
+                                <button
+                                  onClick={() => onQuickAction('purchases')}
+                                  className="px-2 py-0.5 bg-amber-500 hover:bg-amber-600 text-white text-[10px] font-black rounded transition-colors cursor-pointer"
+                                >
+                                  Restock
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {lowStockProducts.length > 5 && (
+                    <div className="text-right">
+                      <button
+                        onClick={() => onQuickAction('inventory')}
+                        className="text-[10.5px] text-blue-600 font-bold hover:underline inline-flex items-center space-x-1 cursor-pointer"
+                      >
+                        <span>And {lowStockProducts.length - 5} more products. Open Stock Inventory</span>
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {activeAlertTab === 'dues' && (
+            <div className="space-y-3">
+              {nearingDueInvoices.length === 0 ? (
+                <div className="text-center py-6 text-slate-400 bg-white rounded-xl border border-slate-100 text-xs">
+                  No outstanding customer accounts require overdue collection.
+                </div>
+              ) : (
+                <>
+                  <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 text-[10px] font-black uppercase text-slate-500 tracking-wider border-b border-slate-200/50">
+                          <th className="px-4 py-2">Customer Shop</th>
+                          <th className="px-4 py-2">Invoice Memo</th>
+                          <th className="px-4 py-2 text-center">Invoice Date</th>
+                          <th className="px-4 py-2 text-center">Days Unpaid</th>
+                          <th className="px-4 py-2 text-right">Outstanding Due</th>
+                          <th className="px-4 py-2 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-[11px] text-slate-700">
+                        {nearingDueInvoices.slice(0, 5).map((inv) => {
+                          const unpaidVal = inv.balanceDue !== undefined ? inv.balanceDue : inv.grandTotal;
+                          const isOver30Days = inv.daysOutstanding >= 30;
+                          return (
+                            <tr key={inv.id} className="hover:bg-slate-50/50 transition-colors">
+                              <td className="px-4 py-2 font-bold text-slate-800">{inv.shopName}</td>
+                              <td className="px-4 py-2 font-mono text-blue-800 font-bold">{inv.invoiceNo}</td>
+                              <td className="px-4 py-2 text-center text-slate-400">{inv.date}</td>
+                              <td className="px-4 py-2 text-center">
+                                <span className={`inline-block px-1.5 py-0.5 rounded font-mono font-black ${
+                                  isOver30Days ? 'bg-red-100 text-red-800' : 'bg-rose-100 text-rose-800'
+                                }`}>
+                                  {inv.daysOutstanding} Days
+                                </span>
+                              </td>
+                              <td className="px-4 py-2 text-right font-black text-rose-600">৳{unpaidVal.toLocaleString()}</td>
+                              <td className="px-4 py-2 text-right">
+                                <button
+                                  onClick={() => onQuickAction('collections')}
+                                  className="px-2 py-0.5 bg-rose-500 hover:bg-rose-600 text-white text-[10px] font-black rounded transition-colors cursor-pointer"
+                                >
+                                  Collect
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {nearingDueInvoices.length > 5 && (
+                    <div className="text-right">
+                      <button
+                        onClick={() => onQuickAction('ledgers')}
+                        className="text-[10.5px] text-blue-600 font-bold hover:underline inline-flex items-center space-x-1 cursor-pointer"
+                      >
+                        <span>And {nearingDueInvoices.length - 5} more outstanding invoices. Open Party Ledgers</span>
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {activeAlertTab === 'approvals' && (
+            <div className="space-y-3">
+              {pendingApprovals.length === 0 ? (
+                <div className="text-center py-6 text-slate-400 bg-white rounded-xl border border-slate-100 text-xs">
+                  All field cash collections are fully settled and approved.
+                </div>
+              ) : (
+                <>
+                  <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 text-[10px] font-black uppercase text-slate-500 tracking-wider border-b border-slate-200/50">
+                          <th className="px-4 py-2">Memo No</th>
+                          <th className="px-4 py-2">Customer Shop</th>
+                          <th className="px-4 py-2">Collected By (DSR)</th>
+                          <th className="px-4 py-2 text-center">Payment Mode</th>
+                          <th className="px-4 py-2 text-right">Collection Amount</th>
+                          <th className="px-4 py-2 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-[11px] text-slate-700">
+                        {pendingApprovals.slice(0, 5).map((col) => (
+                          <tr key={col.id} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="px-4 py-2 font-mono text-slate-900 font-bold">{col.collectionNo}</td>
+                            <td className="px-4 py-2 font-bold text-slate-800">{col.shopName}</td>
+                            <td className="px-4 py-2 font-medium text-slate-600">{col.collectedByName}</td>
+                            <td className="px-4 py-2 text-center">
+                              <span className="inline-block px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-mono text-[9px] font-bold uppercase">
+                                {col.paymentMethod}
+                              </span>
+                            </td>
+                            <td className="px-4 py-2 text-right font-black text-emerald-600">৳{col.amount.toLocaleString()}</td>
+                            <td className="px-4 py-2 text-right">
+                              <button
+                                onClick={() => onQuickAction('settlements')}
+                                className="px-2 py-0.5 bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-black rounded transition-colors cursor-pointer"
+                              >
+                                Approve Transfer
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {pendingApprovals.length > 5 && (
+                    <div className="text-right">
+                      <button
+                        onClick={() => onQuickAction('settlements')}
+                        className="text-[10.5px] text-blue-600 font-bold hover:underline inline-flex items-center space-x-1 cursor-pointer"
+                      >
+                        <span>And {pendingApprovals.length - 5} more settlements pending. Review Settlements</span>
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>

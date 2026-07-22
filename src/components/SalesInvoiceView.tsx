@@ -18,21 +18,31 @@ import {
   RefreshCw,
   Eye,
   Route,
-  Printer
+  Printer,
+  FileDown
 } from 'lucide-react';
 import { collection, getDocs, doc, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { SalesInvoice, Customer, Company, Product, InvoiceItem, UserRole } from '../types';
 import { logActivity } from '../lib/activityLogger';
 import PrintWrapper from './PrintWrapper';
+import QrScannerModal from './QrScannerModal';
+import DocScannerModal from './DocScannerModal';
+import { Camera } from 'lucide-react';
 
 interface SalesInvoiceViewProps {
   userRole: UserRole;
   userId: string;
   userName: string;
+  globalFilters?: {
+    dateFrom: string;
+    dateTo: string;
+    branch: string;
+    status: string;
+  };
 }
 
-export default function SalesInvoiceView({ userRole, userId, userName }: SalesInvoiceViewProps) {
+export default function SalesInvoiceView({ userRole, userId, userName, globalFilters }: SalesInvoiceViewProps) {
   const [invoices, setInvoices] = useState<SalesInvoice[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -48,6 +58,8 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
     return '';
   });
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isProductScannerOpen, setIsProductScannerOpen] = useState(false);
+  const [isDocScannerOpen, setIsDocScannerOpen] = useState(false);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<SalesInvoice | null>(null);
 
@@ -146,10 +158,67 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
     setHasAutosavedDraft(false);
   };
 
+  const handleDocScanComplete = (scannedData: any) => {
+    if (scannedData.companyId) {
+      setCompanyId(scannedData.companyId);
+    }
+    
+    const mappedItems: InvoiceItem[] = scannedData.items.map((item: any) => {
+      const cartonCount = item.ctn || 0;
+      const pieceCount = item.pcs || 0;
+      const prod = products.find(p => p.id === item.productId);
+      const cartonSize = prod?.cartonSize || 12;
+      const totalQty = (cartonCount * cartonSize) + pieceCount;
+      const itemSubTotal = totalQty * (prod?.retailPrice || item.price);
+      
+      return {
+        productId: item.productId,
+        name: prod?.name || item.name,
+        qty: totalQty,
+        cartonCount,
+        pieceCount,
+        price: prod?.retailPrice || item.price,
+        total: itemSubTotal
+      };
+    });
+
+    setItems(mappedItems);
+    if (scannedData.discount) {
+      setDiscount(scannedData.discount);
+    }
+    if (scannedData.paymentReceived) {
+      setPaymentReceived(scannedData.paymentReceived);
+    }
+    alert(`Extracted physical receipt successfully! Automatically configured ${mappedItems.length} products with zero typing.`);
+  };
+
   // Single item adder state
   const [currentProductId, setCurrentProductId] = useState('');
   const [currentCtn, setCurrentCtn] = useState<number>(0);
   const [currentPcs, setCurrentPcs] = useState<number>(0);
+
+  const handleProductBarcodeScanned = (barcode: string) => {
+    // Find the matching product of the current manufacturer company that is not deleted
+    const matchedProduct = products.find(
+      p => p.barcode === barcode && p.companyId === companyId && !p.isDeleted
+    );
+    if (matchedProduct) {
+      setCurrentProductId(matchedProduct.id);
+      setCurrentCtn(0);
+      setCurrentPcs(1); // Default to adding 1 loose piece
+      logActivity(userId, userName, userRole, 'SETTINGS_UPDATE', `Barcode scanned product: ${matchedProduct.name}`);
+    } else {
+      // Also look generally in products to see if it's from another company
+      const genericProduct = products.find(p => p.barcode === barcode && !p.isDeleted);
+      if (genericProduct) {
+        alert(`পণ্যটি পাওয়া গেছে "${genericProduct.name}", কিন্তু এটি অন্য কোম্পানির (${
+          companies.find(c => c.id === genericProduct.companyId)?.name || 'Unknown'
+        }) পণ্য। অনুগ্রহ করে সঠিক কোম্পানি সিলেক্ট করুন।\n(Product found but belongs to another company)`);
+      } else {
+        alert(`কোনো পণ্য পাওয়া যায়নি! (No product found with barcode: ${barcode})`);
+      }
+    }
+  };
 
   const loadData = async () => {
     try {
@@ -393,6 +462,90 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
     setIsDetailModalOpen(true);
   };
 
+  const filteredInvoicesForExport = invoices.filter(inv => {
+    const term = searchTerm.toLowerCase();
+    const matchesSearch = (
+      inv.invoiceNo.toLowerCase().includes(term) ||
+      inv.shopName.toLowerCase().includes(term) ||
+      inv.companyName.toLowerCase().includes(term) ||
+      (inv.route && inv.route.toLowerCase().includes(term)) ||
+      (inv.customerName && inv.customerName.toLowerCase().includes(term))
+    );
+
+    // Global filter matches
+    const matchesGlobalDate = (() => {
+      if (!globalFilters?.dateFrom && !globalFilters?.dateTo) return true;
+      const invDate = inv.date || inv.createdAt?.split('T')[0];
+      if (!invDate) return true;
+      if (globalFilters.dateFrom && invDate < globalFilters.dateFrom) return false;
+      if (globalFilters.dateTo && invDate > globalFilters.dateTo) return false;
+      return true;
+    })();
+
+    const matchesGlobalBranch = (() => {
+      if (!globalFilters?.branch || globalFilters.branch === 'All') return true;
+      if (globalFilters.branch === 'head-office') return !inv.subDepotId;
+      return inv.subDepotId === globalFilters.branch;
+    })();
+
+    const matchesGlobalStatus = (() => {
+      if (!globalFilters?.status || globalFilters.status === 'All') return true;
+      return inv.status === globalFilters.status;
+    })();
+
+    return matchesSearch && matchesGlobalDate && matchesGlobalBranch && matchesGlobalStatus;
+  });
+
+  const handleExportCSV = () => {
+    try {
+      if (filteredInvoicesForExport.length === 0) {
+        alert("কোনো ইনভয়েস ডেটা পাওয়া যায়নি! (No invoice data found to export)");
+        return;
+      }
+
+      // Define CSV headers
+      const headers = [
+        "Invoice No", "Date", "Shop Name", "Customer Name", "Route", "Area", 
+        "Company Name", "Sub Total (BDT)", "Discount (BDT)", "Grand Total (BDT)", 
+        "Payment Received (BDT)", "Payment Method", "Status", "Created At"
+      ];
+      
+      // Define CSV rows
+      const csvRows = [
+        headers.join(","),
+        ...filteredInvoicesForExport.map(inv => [
+          inv.invoiceNo,
+          inv.date,
+          `"${(inv.shopName || '').replace(/"/g, '""')}"`,
+          `"${(inv.customerName || '').replace(/"/g, '""')}"`,
+          `"${(inv.route || '').replace(/"/g, '""')}"`,
+          `"${(inv.area || '').replace(/"/g, '""')}"`,
+          `"${(inv.companyName || '').replace(/"/g, '""')}"`,
+          inv.subTotal || 0,
+          inv.discount || 0,
+          inv.grandTotal || 0,
+          inv.paymentReceived || 0,
+          inv.paymentMethod || 'CASH',
+          inv.status || 'PAID',
+          inv.createdAt ? new Date(inv.createdAt).toISOString().split('T')[0] : ''
+        ].join(","))
+      ];
+
+      // Create Blob with UTF-8 BOM so Excel opens Bengali characters properly
+      const blob = new Blob(["\uFEFF" + csvRows.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      link.setAttribute("download", `samira_traders_sales_invoices_${new Date().toISOString().split('T')[0]}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      console.error("Failed to export sales invoices to CSV:", err);
+      alert("CSV এক্সপোর্ট করতে সমস্যা হয়েছে।");
+    }
+  };
+
   return (
     <div className="space-y-6" id="sales-module">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -400,14 +553,24 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
           <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Sales Invoicing</h2>
           <p className="text-sm text-gray-500">Record retail outlet invoices, adjust company ledgers, and manage stock outflows</p>
         </div>
-        <button
-          onClick={handleOpenAddModal}
-          id="btn-new-invoice"
-          className="flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Create Sales Invoice</span>
-        </button>
+        <div className="flex items-center space-x-3 shrink-0">
+          <button
+            onClick={handleExportCSV}
+            id="btn-export-sales-csv"
+            className="flex items-center justify-center space-x-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer border border-emerald-500"
+          >
+            <FileDown className="w-4.5 h-4.5" />
+            <span>Export CSV</span>
+          </button>
+          <button
+            onClick={handleOpenAddModal}
+            id="btn-new-invoice"
+            className="flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Create Sales Invoice</span>
+          </button>
+        </div>
       </div>
 
       {/* Invoice Records Table */}
@@ -451,13 +614,36 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
           {(() => {
             const filteredInvoices = invoices.filter(inv => {
               const term = searchTerm.toLowerCase();
-              return (
+              const matchesSearch = (
                 inv.invoiceNo.toLowerCase().includes(term) ||
                 inv.shopName.toLowerCase().includes(term) ||
                 inv.companyName.toLowerCase().includes(term) ||
                 (inv.route && inv.route.toLowerCase().includes(term)) ||
                 (inv.customerName && inv.customerName.toLowerCase().includes(term))
               );
+
+              // Global filter matches
+              const matchesGlobalDate = (() => {
+                if (!globalFilters?.dateFrom && !globalFilters?.dateTo) return true;
+                const invDate = inv.date || inv.createdAt?.split('T')[0];
+                if (!invDate) return true;
+                if (globalFilters.dateFrom && invDate < globalFilters.dateFrom) return false;
+                if (globalFilters.dateTo && invDate > globalFilters.dateTo) return false;
+                return true;
+              })();
+
+              const matchesGlobalBranch = (() => {
+                if (!globalFilters?.branch || globalFilters.branch === 'All') return true;
+                if (globalFilters.branch === 'head-office') return !inv.subDepotId;
+                return inv.subDepotId === globalFilters.branch;
+              })();
+
+              const matchesGlobalStatus = (() => {
+                if (!globalFilters?.status || globalFilters.status === 'All') return true;
+                return inv.status === globalFilters.status;
+              })();
+
+              return matchesSearch && matchesGlobalDate && matchesGlobalBranch && matchesGlobalStatus;
             });
 
             if (filteredInvoices.length === 0) {
@@ -616,6 +802,26 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
             <h3 className="text-lg font-bold text-gray-900 mb-1">Sales Invoice Builder</h3>
             <p className="text-xs text-gray-400 mb-6">Build a retail distribution receipt. Outstanding dues accrue per-company based on payment modes.</p>
 
+            {/* Physical Paper Document Scanner banner */}
+            <div className="bg-slate-900 text-white p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5 border border-slate-800 shadow-md">
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 bg-blue-500/10 text-blue-400 rounded-xl border border-blue-500/20">
+                  <Camera className="w-5 h-5 text-blue-400 animate-pulse" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-100">Scan Paper Document (OCR)</h4>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Capture physical retailer invoices or memos to extract items automatically.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsDocScannerOpen(true)}
+                className="bg-blue-600 hover:bg-blue-700 active:scale-95 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all shadow-lg shadow-blue-500/10 cursor-pointer self-start sm:self-center"
+              >
+                Launch Paper Scanner
+              </button>
+            </div>
+
             {hasAutosavedDraft && (
               <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center justify-between text-xs animate-fadeIn">
                 <div className="flex items-center space-x-2 text-blue-700">
@@ -730,10 +936,21 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
               {/* Add Item Form (Only if company is selected) */}
               {companyId ? (
                 <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
-                  <p className="text-xs font-bold text-slate-800 mb-3 flex items-center">
-                    <ShoppingCart className="w-4 h-4 mr-1 text-slate-500" />
-                    <span>সিলেক্ট করুন (Select Products of Selected Company)</span>
-                  </p>
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-3">
+                    <p className="text-xs font-bold text-slate-800 flex items-center">
+                      <ShoppingCart className="w-4 h-4 mr-1 text-slate-500" />
+                      <span>সিলেক্ট করুন (Select Products of Selected Company)</span>
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setIsProductScannerOpen(true)}
+                      className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-colors cursor-pointer shadow-sm border border-blue-500/10"
+                      id="pos-scan-barcode-btn"
+                    >
+                      <Camera className="w-3.5 h-3.5 animate-pulse" />
+                      <span>Scan Barcode (পণ্য স্ক্যান করুন)</span>
+                    </button>
+                  </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
                     <div className="sm:col-span-2">
@@ -1056,6 +1273,29 @@ export default function SalesInvoiceView({ userRole, userId, userName }: SalesIn
           }}
         />
       )}
+
+      {/* Reusable Product Scanner Modal */}
+      <QrScannerModal
+        isOpen={isProductScannerOpen}
+        onClose={() => setIsProductScannerOpen(false)}
+        onScan={handleProductBarcodeScanned}
+        title="Product Barcode Scanner"
+        description="Scan product barcode to automatically select and add to active invoice roster."
+        type="product"
+        mockOptions={products
+          .filter(p => p.companyId === companyId && !p.isDeleted && p.barcode)
+          .map(p => ({ label: `${p.name} (${p.barcode})`, value: p.barcode || '' }))}
+      />
+
+      {/* DocScannerModal for physical invoice transcription */}
+      <DocScannerModal
+        isOpen={isDocScannerOpen}
+        onClose={() => setIsDocScannerOpen(false)}
+        onScanComplete={handleDocScanComplete}
+        companies={companies}
+        products={products}
+        mode="sales"
+      />
     </div>
   );
 }

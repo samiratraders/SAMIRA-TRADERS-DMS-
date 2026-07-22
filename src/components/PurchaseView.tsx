@@ -4,10 +4,11 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { ShoppingBag, Plus, Search, Trash2, Save, X, Building2, Truck, RefreshCw, Eye } from 'lucide-react';
+import { ShoppingBag, Plus, Search, Trash2, Save, X, Building2, Truck, RefreshCw, Eye, Camera } from 'lucide-react';
 import { collection, getDocs, doc, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { Purchase, Supplier, Company, Product, PurchaseItem } from '../types';
+import DocScannerModal from './DocScannerModal';
 
 export default function PurchaseView() {
   const [purchases, setPurchases] = useState<Purchase[]>([]);
@@ -18,6 +19,7 @@ export default function PurchaseView() {
   const [loading, setLoading] = useState(true);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+  const [isDocScannerOpen, setIsDocScannerOpen] = useState(false);
   const [selectedPurchase, setSelectedPurchase] = useState<Purchase | null>(null);
 
   // New Purchase Form State
@@ -102,6 +104,37 @@ export default function PurchaseView() {
   const handleDiscardDraft = () => {
     localStorage.removeItem('dms_autosave_purchase');
     setHasAutosavedDraft(false);
+  };
+
+  const handleDocScanComplete = (scannedData: any) => {
+    if (scannedData.companyId) {
+      setCompanyId(scannedData.companyId);
+    }
+    
+    const mappedItems: PurchaseItem[] = scannedData.items.map((item: any) => {
+      const cartonCount = item.ctn || 0;
+      const pieceCount = item.pcs || 0;
+      const prod = products.find(p => p.id === item.productId);
+      const cartonSize = prod?.cartonSize || 12;
+      const totalQty = (cartonCount * cartonSize) + pieceCount;
+      const itemSubTotal = totalQty * (prod?.purchasePrice || item.price * 0.85);
+      
+      return {
+        productId: item.productId,
+        name: prod?.name || item.name,
+        qty: totalQty,
+        cartonCount,
+        pieceCount,
+        price: prod?.purchasePrice || item.price * 0.85,
+        total: itemSubTotal
+      };
+    });
+
+    setItems(mappedItems);
+    if (scannedData.paymentReceived) {
+      setPaymentPaid(scannedData.paymentReceived);
+    }
+    alert(`Extracted supplier challan successfully! Automatically configured ${mappedItems.length} products with zero typing.`);
   };
 
   // Product single adder
@@ -358,6 +391,26 @@ export default function PurchaseView() {
 
             <h3 className="text-lg font-bold text-gray-900 mb-1">Log Purchase Procurement</h3>
             <p className="text-xs text-gray-400 mb-6">File a factory order or supply invoice. Upon submittal, primary depot stocks increase instantly.</p>
+
+            {/* Physical Paper Document Scanner banner */}
+            <div className="bg-slate-900 text-white p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5 border border-slate-800 shadow-md">
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 bg-blue-500/10 text-blue-400 rounded-xl border border-blue-500/20">
+                  <Camera className="w-5 h-5 text-blue-400 animate-pulse" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-100">Scan Delivery Challan / Invoice</h4>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Capture factory delivery challenger sheets to extract procurement stocks automatically.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsDocScannerOpen(true)}
+                className="bg-blue-600 hover:bg-blue-700 active:scale-95 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all shadow-lg shadow-blue-500/10 cursor-pointer self-start sm:sm:self-center"
+              >
+                Launch Challan Scanner
+              </button>
+            </div>
 
             {hasAutosavedDraft && (
               <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center justify-between text-xs animate-fadeIn">
@@ -693,6 +746,16 @@ export default function PurchaseView() {
           </div>
         </div>
       )}
+
+      {/* DocScannerModal for physical challan transcription */}
+      <DocScannerModal
+        isOpen={isDocScannerOpen}
+        onClose={() => setIsDocScannerOpen(false)}
+        onScanComplete={handleDocScanComplete}
+        companies={companies}
+        products={products}
+        mode="inventory"
+      />
     </div>
   );
 }
