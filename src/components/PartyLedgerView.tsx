@@ -32,7 +32,7 @@ import {
 import { collection, getDocs, query, where, doc, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { logActivity } from '../lib/activityLogger';
-import { Customer, Company, CustomerLedgerEntry, UserProfile, UserRole } from '../types';
+import { Customer, Company, CustomerLedgerEntry, UserProfile, UserRole, Product } from '../types';
 import PrintWrapper from './PrintWrapper';
 
 interface PartyLedgerViewProps {
@@ -61,6 +61,7 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
   // Base Data States
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [staffUsers, setStaffUsers] = useState<UserProfile[]>([]);
   const [staffLedgerEntries, setStaffLedgerEntries] = useState<StaffLedgerEntry[]>([]);
@@ -121,6 +122,23 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
   const [extraSalesAmount, setExtraSalesAmount] = useState<number>(0);
   const [extraSalesRefNo, setExtraSalesRefNo] = useState('');
   const [extraSalesRemarks, setExtraSalesRemarks] = useState('');
+
+  // Itemized product entries for stock auto-deduction/return
+  const [selectedProdId, setSelectedProdId] = useState('');
+  const [itemCartons, setItemCartons] = useState<number>(0);
+  const [itemPcs, setItemPcs] = useState<number>(0);
+  const [itemUnitPrice, setItemUnitPrice] = useState<number>(0);
+  const [txnItems, setTxnItems] = useState<Array<{
+    productId: string;
+    name: string;
+    packSize: string;
+    cartonSize: number;
+    qtyCartons: number;
+    qtyPcs: number;
+    totalQty: number; // in Pcs
+    unitPrice: number;
+    totalAmount: number;
+  }>>([]);
 
   // --- BULK CUSTOMER PAYMENT STATES ---
   const [currentUser, setCurrentUser] = useState<any | null>(null);
@@ -199,18 +217,23 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
         } catch (_) {}
       }
 
-      const [compSnap, custSnap, usersSnap, staffLedgersSnap, supSnap, dsrSheetsSnap] = await Promise.all([
+      const [compSnap, custSnap, usersSnap, staffLedgersSnap, supSnap, dsrSheetsSnap, prodSnap] = await Promise.all([
         getDocs(collection(db, 'companies')),
         getDocs(collection(db, 'customers')),
         getDocs(collection(db, 'users')),
         getDocs(collection(db, 'staffLedgers')),
         getDocs(collection(db, 'suppliers')),
-        getDocs(collection(db, 'dsrSheets'))
+        getDocs(collection(db, 'dsrSheets')),
+        getDocs(collection(db, 'products'))
       ]);
 
       const compList: Company[] = [];
       compSnap.forEach(d => compList.push(d.data() as Company));
       setCompanies(compList);
+
+      const prodList: Product[] = [];
+      prodSnap.forEach(d => prodList.push(d.data() as Product));
+      setProducts(prodList);
 
       const custList: Customer[] = [];
       custSnap.forEach(d => {
@@ -330,28 +353,34 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
     }
   };
 
-  const handleViewInvoiceDetails = async (entry: CustomerLedgerEntry) => {
+  const [selectedTxnEntry, setSelectedTxnEntry] = useState<any>(null);
+
+  const handleViewInvoiceDetails = async (entry: any) => {
     try {
       setLoadingInvoice(true);
-      const salesRef = collection(db, 'sales');
-      const salesSnap = await getDocs(salesRef);
-      let found: any = null;
-      salesSnap.forEach(doc => {
-        const d = doc.data();
-        if (d.invoiceNo === entry.referenceNo || d.id === entry.referenceId) {
-          found = d;
-        }
-      });
+      if (entry.type === 'INVOICE' || entry.type === 'SALES_INVOICE' || entry.referenceNo?.startsWith('INV-')) {
+        const salesRef = collection(db, 'sales');
+        const salesSnap = await getDocs(salesRef);
+        let found: any = null;
+        salesSnap.forEach(doc => {
+          const d = doc.data();
+          if (d.invoiceNo === entry.referenceNo || d.id === entry.referenceId) {
+            found = d;
+          }
+        });
 
-      if (found) {
-        setSelectedInvoice(found);
-        setShowInvoiceDetailsModal(true);
-      } else {
-        alert('দুঃখিত, এই ইনভয়েসের বিস্তারিত বিবরণ ডাটাবেজে পাওয়া যায়নি!');
+        if (found) {
+          setSelectedInvoice(found);
+          setShowInvoiceDetailsModal(true);
+          return;
+        }
       }
+
+      // Fallback for general transaction or non-invoice entry
+      setSelectedTxnEntry(entry);
     } catch (err) {
       console.error('Error loading invoice details:', err);
-      alert('ইনভয়েস লোড করতে সমস্যা হয়েছে।');
+      setSelectedTxnEntry(entry);
     } finally {
       setLoadingInvoice(false);
     }
@@ -488,6 +517,18 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
       return;
     }
 
+    // Check if itemized product breakdown is missing for inventory-impacting transactions
+    const requiresProducts = (custTxnType === 'SALES_INVOICE' || custTxnType === 'RETURN' || custTxnType === 'PURCHASE' || custTxnType === 'PURCHASE_RETURN');
+    if (requiresProducts && txnItems.length === 0) {
+      const proceedWithoutStock = window.confirm(
+        `⚠️ সতর্কতা: আপনি "${custTxnType}" লেনদেন টাইপ নির্বাচন করেছেন, কিন্তু কোন প্রোডাক্ট আইটেম যোগ করেননি!\n\n` +
+        `প্রোডাক্ট না যোগ করলে ইনভেন্টরি স্টক (Stock Count) স্বয়ংক্রিয়ভাবে কমবে বা বাড়বে না।\n` +
+        `স্টক মেলাতে চাইলে নিচে 'পণ্য আইটেম নির্বাচন' করে আইটেম যোগ করুন।\n\n` +
+        `আপনি কি প্রোডাক্ট ইনভেন্টরি সমন্বয় ছাড়াই কেবল টাকার হিসাব এন্ট্রি দিতে চান?`
+      );
+      if (!proceedWithoutStock) return;
+    }
+
     // Determine direction impact: Debit (+) increases due, Credit (-) reduces due
     let isDebit = true;
     if (custTxnType === 'PAYMENT' || custTxnType === 'RETURN' || custTxnType === 'PURCHASE_RETURN') {
@@ -520,6 +561,7 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
 
       // 1. Write Customer Ledger Entry
       const ledgerEntryId = `ledger-manual-${selectedCustomerId}-${Date.now()}`;
+      const finalRefNo = extraSalesRefNo || `TXN-${ledgerEntryId.slice(-5).toUpperCase()}`;
       const newEntry: CustomerLedgerEntry = {
         id: ledgerEntryId,
         customerId: selectedCustomerId,
@@ -527,28 +569,80 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
         companyName: compObj?.name || 'Company',
         type: custTxnType as any,
         referenceId: ledgerEntryId,
-        referenceNo: extraSalesRefNo || `TXN-${ledgerEntryId.slice(-5).toUpperCase()}`,
+        referenceNo: finalRefNo,
         date: extraSalesDate,
         amount: extraSalesAmount,
         balanceAfter: updatedCompanyDue,
-        remarks: extraSalesRemarks || `${custTxnType} লেনদেন এন্ট্রি।`,
+        remarks: extraSalesRemarks || `${custTxnType} লেনদেন এন্ট্রি। ${txnItems.length > 0 ? `(${txnItems.length}টি পণ্য আইটেম স্টক সমন্বয়)` : ''}`,
         createdAt: new Date().toISOString()
       };
 
       batch.set(doc(db, 'ledgers', ledgerEntryId), newEntry);
 
-      // 2. Update Customer outstanding balance
+      // 2. Adjust Product Stocks and create Sales Doc if items were attached
+      if (txnItems.length > 0) {
+        // Adjust product stock
+        for (const item of txnItems) {
+          const prod = products.find(p => p.id === item.productId);
+          if (prod) {
+            const currentStock = prod.stockCount || 0;
+            // Subtract for sales invoice, add back for return
+            const newStock = isDebit 
+              ? Math.max(0, currentStock - item.totalQty)
+              : currentStock + item.totalQty;
+
+            batch.update(doc(db, 'products', item.productId), {
+              stockCount: newStock
+            });
+          }
+        }
+
+        // Save detailed Sale Record in Firestore
+        const salesDocId = `sale-${Date.now()}`;
+        const salesDoc = {
+          id: salesDocId,
+          invoiceNo: finalRefNo,
+          date: extraSalesDate,
+          customerId: selectedCustomerId,
+          shopName: activeCustomer.shopName,
+          customerName: activeCustomer.name,
+          route: activeCustomer.route || '',
+          companyId: extraSalesCompany,
+          companyName: compObj?.name || 'Company',
+          items: txnItems.map(i => ({
+            productId: i.productId,
+            name: i.name,
+            qty: i.totalQty,
+            qtyCartons: i.qtyCartons,
+            qtyPcs: i.qtyPcs,
+            price: i.unitPrice,
+            total: i.totalAmount
+          })),
+          grandTotal: extraSalesAmount,
+          paymentReceived: custTxnType === 'SALES_INVOICE' ? 0 : extraSalesAmount,
+          status: 'COMPLETED',
+          createdAt: new Date().toISOString()
+        };
+        batch.set(doc(db, 'sales', salesDocId), salesDoc);
+      }
+
+      // 3. Update Customer outstanding balance
       batch.update(doc(db, 'customers', selectedCustomerId), {
         dues: updatedDues,
         totalDue: updatedTotalDue
       });
 
       await batch.commit();
-      alert('লেনদেনটি গ্রাহকের লেজার স্টেটমেন্টে সফলভাবে পোস্টিং করা হয়েছে!');
+      alert(`লেনদেনটি গ্রাহকের লেজার স্টেটমেন্টে সফলভাবে পোস্টিং করা হয়েছে! ${txnItems.length > 0 ? '\nপ্রোডাক্ট ইনভেন্টরি স্টক আপডেট সম্পন্ন।' : ''}`);
       setShowExtraSalesModal(false);
       setExtraSalesAmount(0);
       setExtraSalesRefNo('');
       setExtraSalesRemarks('');
+      setTxnItems([]);
+      setSelectedProdId('');
+      setItemCartons(0);
+      setItemPcs(0);
+      setItemUnitPrice(0);
       loadData();
     } catch (err) {
       console.error('Error posting manual customer transaction:', err);
@@ -1136,6 +1230,166 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
                   ))}
                 </select>
               </div>
+
+              {/* Product Items Breakdown Section for Sales/Returns */}
+              {(custTxnType === 'SALES_INVOICE' || custTxnType === 'RETURN' || custTxnType === 'PURCHASE_RETURN' || custTxnType === 'PURCHASE') && (
+                <div className="space-y-2 bg-indigo-50/60 p-3 rounded-2xl border border-indigo-100">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-[11px] font-black text-indigo-900 uppercase tracking-tight">
+                      পণ্য আইটেম নির্বাচন (ইনভেন্টরি স্টক মেলাতে)
+                    </label>
+                    <span className="text-[10px] bg-indigo-100 text-indigo-800 font-bold px-2 py-0.5 rounded-full">
+                      {txnItems.length} টি আইটেম যুক্ত
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    <select
+                      value={selectedProdId}
+                      onChange={(e) => {
+                        const pid = e.target.value;
+                        setSelectedProdId(pid);
+                        const p = products.find(prod => prod.id === pid);
+                        if (p) {
+                          setItemUnitPrice(p.dpPrice || p.tpPrice || p.mrp || 0);
+                        }
+                      }}
+                      className="w-full p-2 bg-white border border-indigo-200 rounded-xl font-bold text-xs text-slate-900 focus:outline-none"
+                    >
+                      <option value="">-- প্রোডাক্ট নির্বাচন করুন --</option>
+                      {products
+                        .filter(p => !extraSalesCompany || p.companyId === extraSalesCompany)
+                        .map(p => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} (স্টক: {p.stockCount || 0} Pcs)
+                          </option>
+                        ))}
+                    </select>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label className="block text-[9px] font-bold text-gray-500 uppercase">কার্টুন (Ctn)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="0"
+                          value={itemCartons || ''}
+                          onChange={(e) => setItemCartons(Math.max(0, parseInt(e.target.value) || 0))}
+                          className="w-full p-2 bg-white border border-gray-200 rounded-xl font-bold font-mono text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[9px] font-bold text-gray-500 uppercase">পিস (Pcs)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="0"
+                          value={itemPcs || ''}
+                          onChange={(e) => setItemPcs(Math.max(0, parseInt(e.target.value) || 0))}
+                          className="w-full p-2 bg-white border border-gray-200 rounded-xl font-bold font-mono text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[9px] font-bold text-gray-500 uppercase">একক দর (৳)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="0"
+                          value={itemUnitPrice || ''}
+                          onChange={(e) => setItemUnitPrice(Math.max(0, parseFloat(e.target.value) || 0))}
+                          className="w-full p-2 bg-white border border-gray-200 rounded-xl font-bold font-mono text-xs"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!selectedProdId) {
+                          alert('দয়া করে প্রোডাক্ট নির্বাচন করুন!');
+                          return;
+                        }
+                        const p = products.find(prod => prod.id === selectedProdId);
+                        if (!p) return;
+                        const ctnSize = p.cartonSize || 1;
+                        const totalQty = (itemCartons * ctnSize) + itemPcs;
+                        if (totalQty <= 0) {
+                          alert('দয়া করে কার্টুন বা পিস এর পরিমাণ দিন!');
+                          return;
+                        }
+                        const itemTotal = totalQty * itemUnitPrice;
+
+                        const newItem = {
+                          productId: p.id,
+                          name: p.name,
+                          packSize: p.packSize || '',
+                          cartonSize: ctnSize,
+                          qtyCartons: itemCartons,
+                          qtyPcs: itemPcs,
+                          totalQty,
+                          unitPrice: itemUnitPrice,
+                          totalAmount: itemTotal
+                        };
+
+                        const newItems = [...txnItems, newItem];
+                        setTxnItems(newItems);
+                        
+                        const sum = newItems.reduce((acc, curr) => acc + curr.totalAmount, 0);
+                        setExtraSalesAmount(sum);
+
+                        setSelectedProdId('');
+                        setItemCartons(0);
+                        setItemPcs(0);
+                        setItemUnitPrice(0);
+                      }}
+                      className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer flex items-center justify-center space-x-1"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>আইটেম যোগ করুন</span>
+                    </button>
+                  </div>
+
+                  {txnItems.length > 0 && (
+                    <div className="mt-2 border border-indigo-200 rounded-xl overflow-hidden bg-white max-h-36 overflow-y-auto">
+                      <table className="w-full text-[11px] text-left">
+                        <thead className="bg-indigo-100/70 font-bold text-indigo-900">
+                          <tr>
+                            <th className="p-1.5">পণ্য</th>
+                            <th className="p-1.5 text-center">পরিমাণ</th>
+                            <th className="p-1.5 text-right">মোট (৳)</th>
+                            <th className="p-1.5 text-center"></th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {txnItems.map((item, idx) => (
+                            <tr key={idx} className="hover:bg-slate-50">
+                              <td className="p-1.5 font-bold text-slate-800">{item.name}</td>
+                              <td className="p-1.5 text-center font-mono">
+                                {item.qtyCartons > 0 ? `${item.qtyCartons}Ctn ` : ''}{item.qtyPcs > 0 ? `${item.qtyPcs}Pcs` : ''}
+                              </td>
+                              <td className="p-1.5 text-right font-mono font-bold text-slate-900">৳{item.totalAmount.toLocaleString()}</td>
+                              <td className="p-1.5 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const newItems = txnItems.filter((_, i) => i !== idx);
+                                    setTxnItems(newItems);
+                                    const sum = newItems.reduce((acc, curr) => acc + curr.totalAmount, 0);
+                                    setExtraSalesAmount(sum);
+                                  }}
+                                  className="text-red-500 hover:text-red-700 font-bold p-0.5"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="space-y-1">
                 <label className="block text-[10px] font-bold text-gray-500 uppercase">টাকার পরিমাণ (Amount ৳) *</label>
@@ -2027,7 +2281,17 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
                               return (
                                 <tr key={entry.id} className="hover:bg-slate-50/50">
                                   <td className="p-3 font-medium text-gray-500">{entry.date}</td>
-                                  <td className="p-3 font-bold font-mono text-blue-800">{entry.referenceNo}</td>
+                                  <td className="p-3">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleViewInvoiceDetails(entry)}
+                                      className="font-bold font-mono text-blue-600 hover:text-blue-800 hover:underline flex items-center gap-1 cursor-pointer"
+                                      title="বিস্তারিত দেখতে ক্লিক করুন"
+                                    >
+                                      <Eye className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                      <span>{entry.referenceNo}</span>
+                                    </button>
+                                  </td>
                                   <td className="p-3 text-center">
                                     <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${
                                       isDebit ? 'bg-rose-50 text-rose-700 border border-rose-100' : 'bg-emerald-50 text-emerald-700 border border-emerald-100'
@@ -2179,7 +2443,17 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
                               return (
                                 <tr key={entry.id} className="hover:bg-slate-50/50">
                                   <td className="p-3 font-medium text-gray-500">{entry.date}</td>
-                                  <td className="p-3 font-bold font-mono text-blue-800">{entry.referenceNo}</td>
+                                  <td className="p-3">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleViewInvoiceDetails(entry)}
+                                      className="font-bold font-mono text-blue-600 hover:text-blue-800 hover:underline flex items-center gap-1 cursor-pointer"
+                                      title="বিস্তারিত দেখতে ক্লিক করুন"
+                                    >
+                                      <Eye className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                                      <span>{entry.referenceNo}</span>
+                                    </button>
+                                  </td>
                                   <td className="p-3 text-center">
                                     <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${
                                       isDebit ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-emerald-50 text-emerald-700 border border-emerald-100'
@@ -2213,6 +2487,81 @@ export default function PartyLedgerView({ preselectedCustomerId }: PartyLedgerVi
         </div>
 
       </div>
+
+      {/* General Transaction Details Modal */}
+      {selectedTxnEntry && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 overflow-y-auto no-print">
+          <div className="bg-white text-slate-900 rounded-3xl max-w-lg w-full p-6 shadow-2xl relative border border-gray-100 space-y-4">
+            <button 
+              type="button"
+              onClick={() => setSelectedTxnEntry(null)} 
+              className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-gray-100 text-gray-400 cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            
+            <h3 className="text-base font-black text-slate-900 border-b pb-2 flex items-center">
+              <ArrowLeftRight className="w-5 h-5 text-indigo-600 mr-2" />
+              <span>লেনদেন বিস্তারিত তথ্য বিবরণী (Ledger Entry)</span>
+            </h3>
+
+            <div className="space-y-3 text-xs bg-slate-50 p-4 rounded-2xl border border-slate-200">
+              <div className="flex justify-between items-center pb-2 border-b border-slate-200/60">
+                <span className="text-slate-500 font-medium">রেফারেন্স নং (Ref No):</span>
+                <span className="font-bold font-mono text-indigo-700 text-sm">{selectedTxnEntry.referenceNo || selectedTxnEntry.id}</span>
+              </div>
+
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500 font-medium">লেনদেনের তারিখ:</span>
+                <span className="font-bold font-mono text-slate-800">{selectedTxnEntry.date || selectedTxnEntry.createdAt?.split('T')[0]}</span>
+              </div>
+
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500 font-medium">লেনদেনের ধরণ (Type):</span>
+                <span className="font-extrabold px-2 py-0.5 bg-indigo-100 text-indigo-800 rounded text-[10px]">
+                  {selectedTxnEntry.type}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500 font-medium">কোম্পানি / অ্যাকাউন্ট:</span>
+                <span className="font-bold text-slate-900">
+                  {selectedTxnEntry.companyName || selectedTxnEntry.customerName || selectedTxnEntry.staffName || selectedTxnEntry.supplierName || 'সাধারণ খতিয়ান'}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-center pt-2 border-t border-slate-200/60">
+                <span className="text-slate-700 font-extrabold text-xs">টাকার পরিমাণ (Amount):</span>
+                <span className="font-black font-mono text-emerald-600 text-lg">৳{(selectedTxnEntry.amount || 0).toLocaleString()}</span>
+              </div>
+
+              {selectedTxnEntry.balanceAfter !== undefined && (
+                <div className="flex justify-between items-center bg-slate-100 p-2 rounded-xl">
+                  <span className="text-slate-600 font-bold">লেনদেন পরবর্তী বকেয়া ব্যালেন্স:</span>
+                  <span className="font-black font-mono text-slate-900">৳{(selectedTxnEntry.balanceAfter || 0).toLocaleString()}</span>
+                </div>
+              )}
+
+              {selectedTxnEntry.remarks && (
+                <div className="pt-2 border-t border-slate-200/60">
+                  <span className="text-slate-500 block mb-0.5 font-bold">মন্তব্য / বিবরণ:</span>
+                  <p className="text-slate-700 italic bg-white p-2 rounded-lg border border-slate-200/80">{selectedTxnEntry.remarks}</p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setSelectedTxnEntry(null)}
+                className="px-5 py-2 bg-slate-900 text-white font-bold rounded-xl text-xs cursor-pointer hover:bg-slate-800"
+              >
+                বন্ধ করুন (Close)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Invoice Details Modal */}
       {showInvoiceDetailsModal && selectedInvoice && (

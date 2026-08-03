@@ -34,8 +34,11 @@ export function ConnectionStatusBadge() {
         setStatus('online');
       }
     } catch (err: any) {
-      console.warn('ConnectionStatusBadge: Firestore connection probe failed:', err);
-      setStatus('offline');
+      if (err?.code === 'unavailable' || err?.message?.includes('offline')) {
+        setStatus('offline');
+      } else {
+        setStatus('online'); // Document might not exist or rule check returned, but backend is reachable
+      }
       setLatency(null);
     }
   };
@@ -57,10 +60,14 @@ export function ConnectionStatusBadge() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
-    // Active real-time checking loop every 10 seconds
+    // Active connection check loop every 30 seconds
     const interval = setInterval(() => {
-      checkConnection();
-    }, 10000);
+      if (navigator.onLine) {
+        checkConnection();
+      } else {
+        setStatus('offline');
+      }
+    }, 30000);
 
     return () => {
       window.removeEventListener('online', handleOnline);

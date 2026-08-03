@@ -26,8 +26,10 @@ import {
   Calendar,
   Layers,
   FileSpreadsheet,
-  ArrowRightLeft
+  ArrowRightLeft,
+  Printer
 } from 'lucide-react';
+import PrintWrapper from './PrintWrapper';
 import { collection, getDocs, doc, setDoc, updateDoc, writeBatch, runTransaction } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { SalesInvoice, Customer, Product, UserProfile, UserRole } from '../types';
@@ -121,7 +123,12 @@ export interface DSRSheet {
   };
 }
 
-export default function DSRView() {
+interface DSRViewProps {
+  currentUserId?: string;
+  currentUserRole?: UserRole;
+}
+
+export default function DSRView({ currentUserId, currentUserRole }: DSRViewProps = {}) {
   const [dsrSheets, setDsrSheets] = useState<DSRSheet[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -157,8 +164,15 @@ export default function DSRView() {
   };
 
   // View control
-  const [activeSubTab, setActiveSubTab] = useState<'list' | 'create'>('list');
+  const [activeSubTab, setActiveSubTab] = useState<'list' | 'create' | 'ready_sales'>('list');
   const [selectedSheetForReturn, setSelectedSheetForReturn] = useState<DSRSheet | null>(null);
+
+  // Ready Sales State
+  const [readySalesItems, setReadySalesItems] = useState<{ productId: string; name: string; rate: number; cartonSize: number; ctn: number; pcs: number; totalUnits: number }[]>([]);
+  const [readyProdId, setReadyProdId] = useState('');
+  const [readyCtn, setReadyCtn] = useState(0);
+  const [readyPcs, setReadyPcs] = useState(0);
+  const [readySearchTerm, setReadySearchTerm] = useState('');
 
   // Create Form State
   const [selectedRoute, setSelectedRoute] = useState('');
@@ -186,6 +200,7 @@ export default function DSRView() {
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [dbError, setDbError] = useState<string | null>(null);
+  const [printModalData, setPrintModalData] = useState<{ type: 'loadsheet' | 'settlement'; data: any; title: string } | null>(null);
 
   // Fetch all necessary data
   const loadData = async () => {
@@ -224,6 +239,15 @@ export default function DSRView() {
         }
       });
       setDsrUsers(usersList);
+
+      // Auto-populate selectedDsrId if current user is a DSR
+      const activeUid = currentUserId || auth?.currentUser?.uid;
+      if (activeUid) {
+        const matchingDsr = usersList.find(u => u.id === activeUid);
+        if (matchingDsr) {
+          setSelectedDsrId(matchingDsr.id);
+        }
+      }
 
     } catch (err) {
       console.error('Error loading DSR sheet datasets:', err);
@@ -347,6 +371,105 @@ export default function DSRView() {
     } catch (err) {
       console.error('Error creating DSR sheet:', err);
       alert('লোডশীট তৈরিতে সমস্যা হয়েছে। দয়া করে আবার চেষ্টা করুন।');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAddReadyItem = () => {
+    if (!readyProdId) {
+      alert('দয়া করে প্রোডাক্ট নির্বাচন করুন!');
+      return;
+    }
+    const prod = products.find(p => p.id === readyProdId);
+    if (!prod) return;
+
+    const totalUnits = (readyCtn * prod.cartonSize) + readyPcs;
+    if (totalUnits <= 0) {
+      alert('দয়া করে সঠিক পরিমাণ (কার্টুন বা পিস) প্রদান করুন!');
+      return;
+    }
+
+    setReadySalesItems(prev => {
+      const existing = prev.find(i => i.productId === readyProdId);
+      if (existing) {
+        return prev.map(i => i.productId === readyProdId ? {
+          ...i,
+          ctn: i.ctn + readyCtn,
+          pcs: i.pcs + readyPcs,
+          totalUnits: i.totalUnits + totalUnits
+        } : i);
+      }
+      return [...prev, {
+        productId: prod.id,
+        name: prod.name,
+        rate: prod.retailPrice,
+        cartonSize: prod.cartonSize,
+        ctn: readyCtn,
+        pcs: readyPcs,
+        totalUnits
+      }];
+    });
+
+    setReadyProdId('');
+    setReadyCtn(0);
+    setReadyPcs(0);
+  };
+
+  const handleCreateReadySalesSheet = async () => {
+    if (!selectedRoute || !selectedDsrId || readySalesItems.length === 0) {
+      alert('দয়া করে রুট, ডিএসআর এবং অন্ততঃ একটি প্রোডাক্ট যুক্ত করুন।');
+      return;
+    }
+    const dsrUser = dsrUsers.find(u => u.id === selectedDsrId);
+    if (!dsrUser) return;
+
+    try {
+      setLoading(true);
+      const sheetId = 'dsr-sheet-ready-' + Date.now();
+      const itemsList: DSRSheetItem[] = readySalesItems.map(p => ({
+        productId: p.productId,
+        name: p.name,
+        rate: p.rate,
+        cartonSize: p.cartonSize,
+        assignedUnits: p.totalUnits,
+        returnedUnits: 0,
+        soldUnits: 0,
+        totalAmount: 0
+      }));
+
+      const newSheet: DSRSheet = {
+        id: sheetId,
+        dsrId: selectedDsrId,
+        dsrName: dsrUser.name,
+        route: selectedRoute,
+        date: selectedDate,
+        status: 'assigned',
+        createdAt: new Date().toISOString(),
+        invoiceIds: [],
+        items: itemsList
+      };
+
+      await setDoc(doc(db, 'dsrSheets', sheetId), newSheet);
+
+      await logActivity(
+        'system_admin',
+        'Manager / Admin',
+        UserRole.SUPER_ADMIN,
+        'SETTINGS_UPDATE',
+        `Created Ready Sales Load Sheet for DSR "${dsrUser.name}" route "${selectedRoute}" containing ${itemsList.length} items.`,
+        { sheetId, route: selectedRoute, dsrName: dsrUser.name }
+      );
+
+      alert('রেডি সেলস লোডশীট সফলভাবে সংরক্ষণ ও লোডশীট তালিকায় যুক্ত করা হয়েছে!');
+      setSelectedRoute('');
+      setSelectedDsrId('');
+      setReadySalesItems([]);
+      setActiveSubTab('list');
+      loadData();
+    } catch (err: any) {
+      console.error('Error creating ready sales sheet:', err);
+      alert('ত্রুটি: ' + (err.message || err));
     } finally {
       setLoading(false);
     }
@@ -741,7 +864,15 @@ export default function DSRView() {
                 activeSubTab === 'create' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              + নতুন অ্যাসাইনমেন্ট (New Load Sheet)
+              + মেমো লোডশীট (Invoice Load)
+            </button>
+            <button
+              onClick={() => setActiveSubTab('ready_sales')}
+              className={`px-4 py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                activeSubTab === 'ready_sales' ? 'bg-emerald-600 text-white shadow-sm' : 'text-emerald-700 hover:bg-emerald-50'
+              }`}
+            >
+              🛒 রেডি সেলস (Ready Sales Direct)
             </button>
           </div>
         )}
@@ -1581,6 +1712,215 @@ export default function DSRView() {
         </div>
       )}
 
+      {/* CREATE READY SALES DIRECT LOAD SHEET PANEL */}
+      {!loading && !selectedSheetForReturn && activeSubTab === 'ready_sales' && (
+        <div className="bg-white p-6 rounded-3xl border border-emerald-200/80 shadow-md space-y-6" id="dsr-ready-sales-panel">
+          <div className="border-b border-emerald-100 pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 className="text-base font-extrabold text-slate-900 flex items-center space-x-2">
+                <span className="p-1.5 bg-emerald-100 text-emerald-800 rounded-xl font-bold text-xs">🛒 Ready Sales</span>
+                <span>ডিএসআর রেডি সেলস ডাইরেক্ট প্রোডাক্ট লোডশীট</span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">
+                মেমো ছাড়াই সরাসরি স্পট-সেলস / রেডি সেলসের জন্য প্রোডাক্টের কার্টন ও পিস ইনপুট দিয়ে ডিএসআর গাড়িতে লোডশীট অ্যাসাইন করুন।
+              </p>
+            </div>
+            <div className="text-right">
+              <span className="text-[10px] font-extrabold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1 rounded-full uppercase tracking-wider">
+                Direct Van Sales
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            {/* Left Column: Route & DSR Selection */}
+            <div className="space-y-4 bg-slate-50/70 p-4 rounded-2xl border border-slate-200/60">
+              <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">১. ডিএসআর ও রুট তথ্য</h4>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 mb-1">ডিএসআর সিলেক্ট করুন (Assign DSR) *</label>
+                <select
+                  value={selectedDsrId}
+                  onChange={(e) => setSelectedDsrId(e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-xl p-2.5 text-xs font-semibold focus:ring-2 focus:ring-emerald-500/20"
+                >
+                  <option value="">-- DSR সিলেক্ট করুন --</option>
+                  {dsrUsers.map(u => (
+                    <option key={u.id} value={u.id}>{u.name} ({u.phone || u.email})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 mb-1">রুট সিলেক্ট করুন (Target Route) *</label>
+                <select
+                  value={selectedRoute}
+                  onChange={(e) => setSelectedRoute(e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-xl p-2.5 text-xs font-semibold focus:ring-2 focus:ring-emerald-500/20"
+                >
+                  <option value="">-- রুট সিলেক্ট করুন --</option>
+                  {routes.map(r => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 mb-1">তারিখ (Assignment Date)</label>
+                <input
+                  type="date"
+                  value={selectedDate}
+                  onChange={(e) => setSelectedDate(e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-xl p-2.5 text-xs font-bold"
+                />
+              </div>
+            </div>
+
+            {/* Right Column: Product Picker & Ready Items List */}
+            <div className="lg:col-span-2 space-y-4">
+              <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">২. লোড করার প্রোডাক্ট ইনপুট</h4>
+
+              {/* Product Add Bar */}
+              <div className="p-4 bg-emerald-50/50 rounded-2xl border border-emerald-200/60 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">খুঁজুন (Search)</label>
+                    <input
+                      type="text"
+                      placeholder="নাম/কোড দিয়ে ফিল্টার..."
+                      value={readySearchTerm}
+                      onChange={(e) => setReadySearchTerm(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-xl p-2 text-xs font-medium"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">প্রোডাক্ট সিলেক্ট করুন (Select Product)</label>
+                    <select
+                      value={readyProdId}
+                      onChange={(e) => setReadyProdId(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-xl p-2 text-xs font-bold text-emerald-950"
+                    >
+                      <option value="">-- সিলেক্ট করুন --</option>
+                      {products
+                        .filter(p => !p.isDeleted && p.name.toLowerCase().includes(readySearchTerm.toLowerCase()))
+                        .map(p => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} [{p.companyName}] (স্টক: {p.stockCount} Pcs) - ৳{p.retailPrice}/Pcs
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 items-end">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">কার্টন (Cartons)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={readyCtn || ''}
+                      onChange={(e) => setReadyCtn(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="w-full bg-white border border-slate-200 rounded-xl p-2 text-xs font-bold text-center"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">পিস (Pieces)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={readyPcs || ''}
+                      onChange={(e) => setReadyPcs(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="w-full bg-white border border-slate-200 rounded-xl p-2 text-xs font-bold text-center"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleAddReadyItem}
+                    className="bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold p-2 rounded-xl text-xs flex items-center justify-center space-x-1 cursor-pointer transition-all shadow-md shadow-emerald-500/10"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>আইটেম যোগ করুন</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Ready Items Roster Table */}
+              <div className="overflow-x-auto bg-white rounded-2xl border border-slate-200/80 shadow-sm">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 text-[10px] font-mono uppercase text-slate-500 border-b border-slate-200">
+                      <th className="py-2.5 px-3">প্রোডাক্ট নাম</th>
+                      <th className="py-2.5 px-3 text-center">কার্টন / পিস</th>
+                      <th className="py-2.5 px-3 text-center">মোট পিস</th>
+                      <th className="py-2.5 px-3 text-right">দর (Rate)</th>
+                      <th className="py-2.5 px-3 text-right">মোট মূল্য</th>
+                      <th className="py-2.5 px-3 text-center">একশন</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {readySalesItems.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="py-8 text-center text-slate-400 italic">
+                          কোন প্রোডাক্ট রেডি সেলস তালিকায় যুক্ত করা হয়নি।
+                        </td>
+                      </tr>
+                    ) : (
+                      readySalesItems.map((item, idx) => {
+                        const itemVal = item.totalUnits * item.rate;
+                        return (
+                          <tr key={idx} className="hover:bg-slate-50/80">
+                            <td className="py-2.5 px-3 font-semibold text-slate-800">{item.name}</td>
+                            <td className="py-2.5 px-3 text-center font-mono text-slate-600">
+                              {item.ctn > 0 ? `${item.ctn} Ctn ` : ''}
+                              {item.pcs > 0 ? `${item.pcs} Pcs` : ''}
+                            </td>
+                            <td className="py-2.5 px-3 text-center font-mono font-bold text-emerald-700">{item.totalUnits} Pcs</td>
+                            <td className="py-2.5 px-3 text-right font-mono text-slate-600">৳{item.rate}</td>
+                            <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">৳{itemVal.toFixed(2)}</td>
+                            <td className="py-2.5 px-3 text-center">
+                              <button
+                                type="button"
+                                onClick={() => setReadySalesItems(prev => prev.filter((_, i) => i !== idx))}
+                                className="text-rose-500 hover:text-rose-700 p-1 rounded hover:bg-rose-50 cursor-pointer"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {readySalesItems.length > 0 && (
+                <div className="p-4 bg-slate-900 text-white rounded-2xl flex items-center justify-between shadow-lg">
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wider block">মোট রেডি সেলস লোড ভ্যালু</span>
+                    <span className="text-xl font-black font-mono text-emerald-400">
+                      ৳{readySalesItems.reduce((sum, i) => sum + (i.totalUnits * i.rate), 0).toLocaleString()}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCreateReadySalesSheet}
+                    className="bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black px-6 py-2.5 rounded-xl text-xs uppercase tracking-wider shadow-lg shadow-emerald-500/20 cursor-pointer transition-all"
+                  >
+                    রেডি সেলস লোডশীট সাবমিট করুন
+                  </button>
+                </div>
+              )}
+
+            </div>
+
+          </div>
+        </div>
+      )}
+
       {/* DSR ASSIGNMENT LIST TAB */}
       {!loading && !selectedSheetForReturn && activeSubTab === 'list' && (
         <div className="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden" id="dsr-list-panel">
@@ -1677,27 +2017,59 @@ export default function DSRView() {
                           )}
                         </td>
                         <td className="py-4 px-5 text-center">
-                          {sheet.status === 'assigned' ? (
+                          <div className="flex items-center justify-center space-x-1.5 flex-wrap gap-y-1">
+                            {/* Morning Loadsheet Print Button */}
                             <button
-                              onClick={() => handleOpenReturnPage(sheet)}
-                              className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 px-3.5 rounded-lg text-[11px] transition-all cursor-pointer shadow-sm shadow-blue-500/10 hover:shadow"
+                              type="button"
+                              onClick={() => setPrintModalData({
+                                type: 'loadsheet',
+                                data: sheet,
+                                title: 'Morning Loadsheet'
+                              })}
+                              className="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-[11px] font-bold transition-colors cursor-pointer flex items-center space-x-1"
+                              title="সকালের লোডশীট প্রিন্ট করুন"
                             >
-                              হিসাব মিলান (Checkout Returns)
+                              <Printer className="w-3.5 h-3.5 text-blue-600" />
+                              <span>লোডশীট</span>
                             </button>
-                          ) : sheet.status === 'submitted_by_dsr' ? (
-                            <div className="text-[10px] text-orange-600 bg-orange-50 font-bold py-1 px-2.5 rounded-lg border border-orange-100 max-w-max mx-auto">
-                              ম্যানেজার যাচাই পেন্ডিং
-                            </div>
-                          ) : sheet.status === 'reviewed_by_manager' ? (
-                            <div className="text-[10px] text-blue-600 bg-blue-50 font-bold py-1 px-2.5 rounded-lg border border-blue-100 max-w-max mx-auto">
-                              এডমিন অনুমোদন পেন্ডিং
-                            </div>
-                          ) : (
-                            <div className="flex items-center justify-center space-x-2 text-[11px] font-bold text-emerald-600 bg-emerald-50 py-1 px-2.5 rounded-lg max-w-max mx-auto">
-                              <Check className="w-3.5 h-3.5" />
-                              <span>হিসাব সম্পন্ন</span>
-                            </div>
-                          )}
+
+                            {/* Evening Settlement Report Print Button */}
+                            {sheet.reconciliation && (
+                              <button
+                                type="button"
+                                onClick={() => setPrintModalData({
+                                  type: 'settlement',
+                                  data: {
+                                    id: sheet.id,
+                                    date: sheet.date,
+                                    dsrName: sheet.dsrName,
+                                    route: sheet.route,
+                                    totalCartons: sheet.items.reduce((sum, i) => sum + Math.floor(i.assignedUnits / (i.cartonSize || 1)), 0),
+                                    totalSales: sheet.reconciliation.netSales,
+                                    cashCollected: sheet.reconciliation.cashReceived,
+                                    marketDues: sheet.reconciliation.totalCustomerDue,
+                                    shortageAmount: sheet.reconciliation.shortage,
+                                    items: sheet.items
+                                  },
+                                  title: 'Evening Settlement Report'
+                                })}
+                                className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-[11px] font-bold transition-colors cursor-pointer flex items-center space-x-1"
+                                title="বিকেলের হিসেব সেটেলমেন্ট প্রিন্ট করুন"
+                              >
+                                <FileText className="w-3.5 h-3.5 text-emerald-600" />
+                                <span>বিকেলের হিসেব</span>
+                              </button>
+                            )}
+
+                            {sheet.status === 'assigned' && (
+                              <button
+                                onClick={() => handleOpenReturnPage(sheet)}
+                                className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1 px-3 rounded-lg text-[11px] transition-all cursor-pointer shadow-xs"
+                              >
+                                হিসাব মিলান
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1708,6 +2080,15 @@ export default function DSRView() {
           )}
 
         </div>
+      )}
+
+      {printModalData && (
+        <PrintWrapper
+          type={printModalData.type}
+          title={printModalData.title}
+          data={printModalData.data}
+          onClose={() => setPrintModalData(null)}
+        />
       )}
 
     </div>

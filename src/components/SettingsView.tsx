@@ -291,6 +291,127 @@ export default function SettingsView({
     }
   };
 
+  const [isResetting, setIsResetting] = useState(false);
+
+  // Chunked batch write helper to avoid Firestore 500 ops limit
+  const executeBatchOperations = async (operations: ((batch: ReturnType<typeof writeBatch>) => void)[]) => {
+    const CHUNK_SIZE = 400;
+    for (let i = 0; i < operations.length; i += CHUNK_SIZE) {
+      const batch = writeBatch(db);
+      const chunk = operations.slice(i, i + CHUNK_SIZE);
+      chunk.forEach(op => op(batch));
+      await batch.commit();
+    }
+  };
+
+  const handleResetAllDemoData = async (mode: 'full' | 'stock_credit_only' | 'factory_reset') => {
+    let confirmMsg = "";
+    if (mode === 'stock_credit_only') {
+      confirmMsg = "⚠️ সতর্কবার্তা: আপনি কি নিশ্চিত যে সমস্ত পণ্যের স্টক জিরো (0) এবং সমস্ত কাস্টমারের পাওনা/ক্রেডিট জিরো (0) করতে চান?";
+    } else if (mode === 'full') {
+      confirmMsg = "⚠️ সতর্কবার্তা: আপনি কি নিশ্চিত যে সমস্ত টেস্ট/ডেমো এন্ট্রি (বিক্রি, কালেকশন, চালান, লেজার, রিপোর্ট) মুছে জিরো করতে চান? প্রোডাক্ট ও কাস্টমার তালিকা ঠিক থাকবে।";
+    } else {
+      confirmMsg = "🚨 চরম সতর্কবার্তা: এটি ফ্যাক্টরি রিসেট! সমস্ত ডেটাবেস (প্রোডাক্ট, কাস্টমার, কোম্পানি, সাপ্লায়ার, বিক্রি, লেজার) স্থায়ীভাবে মুছে যাবে।";
+    }
+
+    if (!window.confirm(confirmMsg)) return;
+
+    const challenge = window.prompt("নিশ্চিত করতে 'RESET' টাইপ করুন:");
+    if (challenge !== 'RESET') {
+      alert("ভেরিফিকেশন ব্যর্থ হয়েছে। রিসেট বাতিল করা হলো।");
+      return;
+    }
+
+    try {
+      setIsResetting(true);
+
+      // Collections to purge based on mode
+      let colsToPurge: string[] = [];
+
+      if (mode === 'full' || mode === 'stock_credit_only') {
+        colsToPurge = [
+          'sales', 'collections', 'dsrSheets', 'dsrSettlements', 'managerSettlements', 
+          'dailySettlements', 'dailyReconciliations', 'reconciliations', 'expenses', 'ledgers', 
+          'customerLedgers', 'staffLedgers', 'supplierLedgers', 'purchases', 'supplierClaims', 
+          'subDepotTransactions', 'subDepotLedgers', 'activity_logs', 'payments'
+        ];
+      } else if (mode === 'factory_reset') {
+        colsToPurge = [
+          'sales', 'collections', 'dsrSheets', 'dsrSettlements', 'managerSettlements', 
+          'dailySettlements', 'dailyReconciliations', 'reconciliations', 'expenses', 'ledgers', 
+          'customerLedgers', 'staffLedgers', 'supplierLedgers', 'purchases', 'supplierClaims', 
+          'subDepotTransactions', 'subDepotLedgers', 'activity_logs', 'payments', 
+          'products', 'customers', 'companies', 'suppliers', 'subDepots'
+        ];
+      }
+
+      // 1. Purge selected collections
+      for (const colName of colsToPurge) {
+        const snap = await getDocs(collection(db, colName));
+        const ops: ((batch: ReturnType<typeof writeBatch>) => void)[] = [];
+        snap.forEach(docSnap => {
+          ops.push(b => b.delete(docSnap.ref));
+        });
+        if (ops.length > 0) {
+          await executeBatchOperations(ops);
+        }
+      }
+
+      // 2. If not factory reset, reset product stock counts, customer dues & subdepot dues to 0
+      if (mode !== 'factory_reset') {
+        // Reset product stock counts to 0
+        const prodSnap = await getDocs(collection(db, 'products'));
+        const prodOps: ((batch: ReturnType<typeof writeBatch>) => void)[] = [];
+        prodSnap.forEach(docSnap => {
+          prodOps.push(b => b.update(docSnap.ref, {
+            stockCount: 0,
+            damageStock: 0,
+            primaryStockCount: 0,
+            secondaryStockCount: 0,
+            subDepotStocks: {}
+          }));
+        });
+        if (prodOps.length > 0) {
+          await executeBatchOperations(prodOps);
+        }
+
+        // Reset customer dues and credits to 0
+        const custSnap = await getDocs(collection(db, 'customers'));
+        const custOps: ((batch: ReturnType<typeof writeBatch>) => void)[] = [];
+        custSnap.forEach(docSnap => {
+          custOps.push(b => b.update(docSnap.ref, {
+            totalDue: 0,
+            dues: {}
+          }));
+        });
+        if (custOps.length > 0) {
+          await executeBatchOperations(custOps);
+        }
+
+        // Reset subDepot dues to 0
+        const subDepotSnap = await getDocs(collection(db, 'subDepots'));
+        const subDepotOps: ((batch: ReturnType<typeof writeBatch>) => void)[] = [];
+        subDepotSnap.forEach(docSnap => {
+          subDepotOps.push(b => b.update(docSnap.ref, {
+            totalDue: 0
+          }));
+        });
+        if (subDepotOps.length > 0) {
+          await executeBatchOperations(subDepotOps);
+        }
+      }
+
+      alert("🎉 রিসেট প্রক্রিয়া সফলভাবে সম্পূর্ণ হয়েছে! পেজটি রিফ্রেশ হচ্ছে...");
+      window.location.reload();
+
+    } catch (err: any) {
+      console.error('Error resetting database:', err);
+      alert(`রিসেট প্রক্রিয়ায় সমস্যা হয়েছে: ${err.message || err}`);
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(true);
@@ -1422,51 +1543,42 @@ export default function SettingsView({
               </div>
 
               <div>
-                <h4 className="text-xs font-black uppercase text-rose-500 tracking-wider mb-3">Irreversible System Purge</h4>
-                <div className="bg-rose-50/40 border border-rose-100 p-4 rounded-2xl space-y-4">
-                  <p className="text-[11px] text-rose-700/80 leading-relaxed">
-                    Clear the current system tables to remove dummy sample records. This operation requires full authentication challenge.
+                <h4 className="text-xs font-black uppercase text-rose-600 tracking-wider mb-3">
+                  🔥 ডেটাবেস রিসেট ও ডেমো ডাটা ক্লিয়ার (Database Reset & Clear Demo Data)
+                </h4>
+                <div className="bg-rose-50 border border-rose-200 p-4 rounded-2xl space-y-3">
+                  <p className="text-[11px] text-rose-800 leading-relaxed font-medium">
+                    সফটওয়্যারের ডেমো এন্ট্রি, স্টক ও ক্রেডিট মুছে নতুন করে কাজ শুরু করার জন্য পছন্দসই অপশন টিপুন:
                   </p>
-                  <button
-                    onClick={async () => {
-                      const initialConfirm = window.confirm("WARNING: This will clear temporary entries so you can load real data. Are you absolutely certain you want to purge system tables?");
-                      if (!initialConfirm) return;
+                  
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleResetAllDemoData('stock_credit_only')}
+                      disabled={isResetting}
+                      className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-2.5 px-3 rounded-xl text-xs transition-colors cursor-pointer shadow-xs border border-amber-700/20 disabled:opacity-50"
+                    >
+                      {isResetting ? 'রিসেট হচ্ছে...' : '1. স্টক ও ক্রেডিট জিরো (Zero Stock & Dues)'}
+                    </button>
 
-                      const typedChallenge = window.prompt("To confirm this dangerous operation, type 'PURGE ALL' in the field below:");
-                      if (typedChallenge !== 'PURGE ALL') {
-                        alert("Passphrase challenge failed. Operation cancelled.");
-                        return;
-                      }
+                    <button
+                      type="button"
+                      onClick={() => handleResetAllDemoData('full')}
+                      disabled={isResetting}
+                      className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold py-2.5 px-3 rounded-xl text-xs transition-colors cursor-pointer shadow-xs border border-rose-700/20 disabled:opacity-50"
+                    >
+                      {isResetting ? 'মুছে ফেলা হচ্ছে...' : '2. ডেমো ট্রানজেকশন মুছে জিরো (Wipe Demo Sales & Sheets)'}
+                    </button>
 
-                      try {
-                        setLoading(true);
-                        const collectionsToPurge = ['companies', 'suppliers', 'customers', 'products', 'sales', 'purchases', 'collections', 'expenses', 'subDepotTransactions'];
-                        let deletedCount = 0;
-                        
-                        for (const colName of collectionsToPurge) {
-                          const snap = await getDocs(collection(db, colName));
-                          const batch = writeBatch(db);
-                          snap.forEach(docSnap => {
-                            batch.delete(docSnap.ref);
-                            deletedCount++;
-                          });
-                          await batch.commit();
-                        }
-
-                        alert(`System purged successfully. Deleted ${deletedCount} records across distributions. Ready for fresh imports!`);
-                        window.location.reload();
-                      } catch (err: any) {
-                        console.error('Purge error:', err);
-                        alert(`Purge failed: ${err.message}`);
-                      } finally {
-                        setLoading(false);
-                      }
-                    }}
-                    className="w-full bg-rose-500 hover:bg-rose-600 text-white py-2.5 rounded-xl text-xs font-bold transition-colors flex items-center justify-center space-x-2 cursor-pointer"
-                  >
-                    <X className="w-4 h-4" />
-                    <span>Reset System Tables</span>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => handleResetAllDemoData('factory_reset')}
+                      disabled={isResetting}
+                      className="w-full bg-red-800 hover:bg-red-900 text-white font-bold py-2.5 px-3 rounded-xl text-xs transition-colors cursor-pointer shadow-xs border border-red-950/30 disabled:opacity-50"
+                    >
+                      {isResetting ? 'ক্লিন হচ্ছে...' : '3. সম্পূর্ণ ফ্যাক্টরি রিসেট (Full Factory Reset)'}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

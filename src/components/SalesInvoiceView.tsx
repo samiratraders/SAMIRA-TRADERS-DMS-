@@ -196,6 +196,9 @@ export default function SalesInvoiceView({ userRole, userId, userName, globalFil
   const [currentProductId, setCurrentProductId] = useState('');
   const [currentCtn, setCurrentCtn] = useState<number>(0);
   const [currentPcs, setCurrentPcs] = useState<number>(0);
+  const [currentFreePcs, setCurrentFreePcs] = useState<number>(0);
+  const [currentProdDiscount, setCurrentProdDiscount] = useState<number>(0);
+  const [prodSearchTerm, setProdSearchTerm] = useState<string>('');
 
   const handleProductBarcodeScanned = (barcode: string) => {
     // Find the matching product of the current manufacturer company that is not deleted
@@ -265,7 +268,7 @@ export default function SalesInvoiceView({ userRole, userId, userName, globalFil
   const handleOpenAddModal = () => {
     setCustomerId('');
     setSelectedRoute('');
-    setCompanyId('');
+    setCompanyId('all'); // Default to All Companies for multi-supplier capability
     setItems([]);
     setDiscount(0);
     setPaymentReceived(0);
@@ -273,36 +276,60 @@ export default function SalesInvoiceView({ userRole, userId, userName, globalFil
     setCurrentProductId('');
     setCurrentCtn(0);
     setCurrentPcs(0);
+    setCurrentFreePcs(0);
+    setCurrentProdDiscount(0);
+    setProdSearchTerm('');
     setIsAddModalOpen(true);
   };
 
-  // Filter products by selected Company
-  const availableProducts = products.filter(p => p.companyId === companyId);
+  // Filter products by selected Company and Search term
+  const availableProducts = products.filter(p => {
+    if (p.isDeleted) return false;
+    if (companyId && companyId !== 'all' && p.companyId !== companyId) return false;
+    if (prodSearchTerm) {
+      const term = prodSearchTerm.toLowerCase();
+      const matchName = p.name.toLowerCase().includes(term);
+      const matchCode = (p.barcode && p.barcode.toLowerCase().includes(term)) || (p.sku && p.sku.toLowerCase().includes(term));
+      const matchComp = p.companyName ? p.companyName.toLowerCase().includes(term) : false;
+      return matchName || matchCode || matchComp;
+    }
+    return true;
+  });
 
   const handleAddItem = () => {
-    if (!currentProductId) return;
+    if (!currentProductId) {
+      alert('দয়া করে ড্রপডাউন থেকে পণ্য সিলেক্ট করুন!');
+      return;
+    }
     const prod = products.find(p => p.id === currentProductId);
     if (!prod) return;
 
     // Calculate final units qty based on carton and pieces inputs
     const units = (currentCtn * prod.cartonSize) + currentPcs;
-    if (units <= 0) {
-      alert('দয়া করে কার্টুন অথবা পিস এর ঘরে সঠিক পরিমাণ লিখুন!');
+    if (units <= 0 && currentFreePcs <= 0) {
+      alert('দয়া করে বিক্রয় পরিমাণ (কার্টুন/পিস) অথবা ফ্রি প্রোডাক্টের ঘরে সঠিক পরিমাণ লিখুন!');
       return;
     }
     const cartonQty = units / prod.cartonSize;
 
-    // Check primary stock
-    if (prod.stockCount < units) {
-      alert(`স্টকে পর্যাপ্ত পরিমাণ পণ্য নেই! উপলব্ধ স্টক: ${prod.stockCount} পিস, এন্ট্রি করেছেন: ${units} পিস।`);
+    // Check primary stock (sales units + free units)
+    const totalDeductionUnits = units + currentFreePcs;
+    if (prod.stockCount < totalDeductionUnits) {
+      alert(`স্টকে পর্যাপ্ত পরিমাণ পণ্য নেই! উপলব্ধ স্টক: ${prod.stockCount} পিস, মোট প্রয়োজন (বিক্রি + ফ্রি): ${totalDeductionUnits} পিস।`);
       return;
     }
+
+    const itemTotal = Math.max(0, (units * prod.retailPrice) - currentProdDiscount);
 
     // Check if already added
     const existing = items.find(i => i.productId === currentProductId);
     if (existing) {
       const newQty = existing.qty + units;
-      if (prod.stockCount < newQty) {
+      const newFreeQty = (existing.freeQty || 0) + currentFreePcs;
+      const newProdDiscount = (existing.productDiscount || 0) + currentProdDiscount;
+      const newTotal = Math.max(0, (newQty * prod.retailPrice) - newProdDiscount);
+      
+      if (prod.stockCount < (newQty + newFreeQty)) {
         alert(`স্টকে পর্যাপ্ত পরিমাণ পণ্য নেই!`);
         return;
       }
@@ -310,7 +337,9 @@ export default function SalesInvoiceView({ userRole, userId, userName, globalFil
         ...i,
         qty: newQty,
         cartonQty: newQty / prod.cartonSize,
-        total: newQty * prod.retailPrice
+        freeQty: newFreeQty,
+        productDiscount: newProdDiscount,
+        total: newTotal
       } : i));
     } else {
       const newItem: InvoiceItem = {
@@ -318,8 +347,12 @@ export default function SalesInvoiceView({ userRole, userId, userName, globalFil
         name: prod.name,
         qty: units,
         price: prod.retailPrice,
-        total: units * prod.retailPrice,
-        cartonQty: cartonQty
+        total: itemTotal,
+        cartonQty: cartonQty,
+        freeQty: currentFreePcs,
+        productDiscount: currentProdDiscount,
+        companyId: prod.companyId,
+        companyName: prod.companyName
       };
       setItems(prev => [...prev, newItem]);
     }
@@ -328,6 +361,8 @@ export default function SalesInvoiceView({ userRole, userId, userName, globalFil
     setCurrentProductId('');
     setCurrentCtn(0);
     setCurrentPcs(0);
+    setCurrentFreePcs(0);
+    setCurrentProdDiscount(0);
   };
 
   const handleRemoveItem = (prodId: string) => {
@@ -917,106 +952,143 @@ export default function SalesInvoiceView({ userRole, userId, userName, globalFil
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Manufacturer Partner *</label>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Manufacturer Partner / Company *</label>
                   <select
                     required
                     value={companyId}
                     onChange={(e) => {
                       setCompanyId(e.target.value);
-                      setItems([]); // Clear items if company changes to prevent brand mixing
                     }}
                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold"
                   >
-                    <option value="">Select Company</option>
+                    <option value="all">সব কোম্পানি (All Partner Brands - Multi-Supplier)</option>
                     {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </div>
               </div>
 
-              {/* Add Item Form (Only if company is selected) */}
-              {companyId ? (
-                <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
-                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 mb-3">
-                    <p className="text-xs font-bold text-slate-800 flex items-center">
-                      <ShoppingCart className="w-4 h-4 mr-1 text-slate-500" />
-                      <span>সিলেক্ট করুন (Select Products of Selected Company)</span>
-                    </p>
+              {/* Add Item Form */}
+              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-3">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                  <p className="text-xs font-bold text-slate-800 flex items-center">
+                    <ShoppingCart className="w-4 h-4 mr-1 text-blue-600" />
+                    <span>প্রোডাক্ট সিলেক্ট ও ফ্রি/ডিসকাউন্ট এন্ট্রি (Product Search & Line Items)</span>
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setIsProductScannerOpen(true)}
+                    className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-colors cursor-pointer shadow-xs border border-blue-500/10"
+                    id="pos-scan-barcode-btn"
+                  >
+                    <Camera className="w-3.5 h-3.5 animate-pulse" />
+                    <span>Scan Barcode (বারকোড স্ক্যান)</span>
+                  </button>
+                </div>
+
+                {/* Product Filter/Search Bar */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div className="sm:col-span-1">
+                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">পণ্য সার্চ করুন (Product Search)</label>
+                    <input
+                      type="text"
+                      placeholder="নাম/কোড দিয়ে খুঁজুন..."
+                      value={prodSearchTerm}
+                      onChange={(e) => setProdSearchTerm(e.target.value)}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-blue-500/20"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-[10px] font-bold text-slate-500 mb-0.5">পণ্য নির্বাচন (Select SKU)</label>
+                    <select
+                      value={currentProductId}
+                      onChange={(e) => {
+                        setCurrentProductId(e.target.value);
+                        setCurrentCtn(0);
+                        setCurrentPcs(0);
+                        setCurrentFreePcs(0);
+                        setCurrentProdDiscount(0);
+                      }}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold focus:ring-2 focus:ring-blue-500/20"
+                    >
+                      <option value="">-- পণ্য সিলেক্ট করুন (Choose Product) --</option>
+                      {availableProducts.map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} [{p.companyName || 'Brand'}] (স্টক: {p.stockCount} পিস) - ৳{p.retailPrice}/পিস
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Line Item Inputs: Carton, Pcs, Free Pcs, Product-wise Discount */}
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 items-end pt-1">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">কার্টুন (Ctn)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={currentCtn || ''}
+                      onChange={(e) => setCurrentCtn(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-xl text-xs text-center font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">পিস (Pcs)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={currentPcs || ''}
+                      onChange={(e) => setCurrentPcs(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-xl text-xs text-center font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-emerald-700 mb-0.5">🎁 ফ্রি পিস (Free Pcs)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={currentFreePcs || ''}
+                      onChange={(e) => setCurrentFreePcs(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="w-full p-2 bg-emerald-50/60 border border-emerald-200 rounded-xl text-xs text-center font-black text-emerald-800"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-blue-700 mb-0.5">🏷️ ডিসকাউন্ট ৳ (Discount)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={currentProdDiscount || ''}
+                      onChange={(e) => setCurrentProdDiscount(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="w-full p-2 bg-blue-50/60 border border-blue-200 rounded-xl text-xs text-center font-black text-blue-800"
+                    />
+                  </div>
+
+                  <div className="col-span-2 sm:col-span-1">
                     <button
                       type="button"
-                      onClick={() => setIsProductScannerOpen(true)}
-                      className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-colors cursor-pointer shadow-sm border border-blue-500/10"
-                      id="pos-scan-barcode-btn"
+                      onClick={handleAddItem}
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-xl text-xs transition-colors cursor-pointer shadow-xs"
                     >
-                      <Camera className="w-3.5 h-3.5 animate-pulse" />
-                      <span>Scan Barcode (পণ্য স্ক্যান করুন)</span>
+                      + আইটেম যোগ করুন
                     </button>
                   </div>
+                </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
-                    <div className="sm:col-span-2">
-                      <label className="block text-[10px] font-bold text-gray-500 mb-1">পণ্য (Product SKU)</label>
-                      <select
-                        value={currentProductId}
-                        onChange={(e) => {
-                          setCurrentProductId(e.target.value);
-                          setCurrentCtn(0);
-                          setCurrentPcs(0);
-                        }}
-                        className="w-full p-2 bg-white border border-slate-200 rounded text-xs focus:ring-2 focus:ring-blue-500/20"
-                      >
-                        <option value="">Select Product SKU</option>
-                        {availableProducts.map(p => (
-                          <option key={p.id} value={p.id}>
-                            {p.name} (স্টক: {p.stockCount} পিস)
-                          </option>
-                        ))}
-                      </select>
-                      {currentProductId && products.find(p => p.id === currentProductId) && (
-                        <div className="text-[10px] text-blue-600 font-bold mt-1">
-                          📦 প্যাকিং সাইজ: ১ কার্টুন = {products.find(p => p.id === currentProductId)?.cartonSize} পিস (৳{((products.find(p => p.id === currentProductId)?.retailPrice || 0) * (products.find(p => p.id === currentProductId)?.cartonSize || 1)).toLocaleString()} / কার্টুন)
-                        </div>
-                      )}
-                    </div>
-
-                    <div>
-                      <label className="block text-[10px] font-bold text-gray-500 mb-1">কার্টুন পরিমাণ (Carton)</label>
-                      <input
-                        type="number"
-                        min="0"
-                        placeholder="0"
-                        value={currentCtn || ''}
-                        onChange={(e) => setCurrentCtn(Math.max(0, parseInt(e.target.value) || 0))}
-                        className="w-full p-2 bg-white border border-slate-200 rounded text-xs text-center font-bold"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-[10px] font-bold text-gray-500 mb-1">পিস পরিমাণ (Pieces / Loose)</label>
-                      <div className="flex space-x-1">
-                        <input
-                          type="number"
-                          min="0"
-                          placeholder="0"
-                          value={currentPcs || ''}
-                          onChange={(e) => setCurrentPcs(Math.max(0, parseInt(e.target.value) || 0))}
-                          className="w-full p-2 bg-white border border-slate-200 rounded text-xs text-center font-bold"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleAddItem}
-                          className="bg-blue-600 hover:bg-blue-700 text-white px-3 rounded font-bold text-xs shrink-0 cursor-pointer"
-                        >
-                          Add
-                        </button>
-                      </div>
-                    </div>
+                {currentProductId && products.find(p => p.id === currentProductId) && (
+                  <div className="text-[10px] text-blue-700 font-extrabold bg-blue-50 p-2 rounded-xl border border-blue-100 flex items-center justify-between">
+                    <span>📦 ১ কার্টুন = {products.find(p => p.id === currentProductId)?.cartonSize} পিস</span>
+                    <span>খুচরা দর: ৳{products.find(p => p.id === currentProductId)?.retailPrice} / পিস</span>
+                    <span>উপলব্ধ স্টক: {products.find(p => p.id === currentProductId)?.stockCount} পিস</span>
                   </div>
-                </div>
-              ) : (
-                <div className="text-center py-4 bg-slate-50 rounded-xl border border-dashed border-slate-200 text-xs text-gray-400 italic">
-                  * Please choose a customer and company first to view compatible inventory SKUs.
-                </div>
-              )}
+                )}
+              </div>
 
               {/* Added Products Grid */}
               <div>
@@ -1026,31 +1098,42 @@ export default function SalesInvoiceView({ userRole, userId, userName, globalFil
                     Add inventory items from above to populate the active invoice bill
                   </div>
                 ) : (
-                  <div className="border border-slate-100 rounded-lg overflow-hidden bg-white">
+                  <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-xs">
                     <table className="w-full text-left text-xs">
-                      <thead className="bg-slate-50 text-gray-500 font-bold">
+                      <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
                         <tr>
-                          <th className="p-3">Product Description</th>
-                          <th className="p-3 text-right">Unit Price</th>
-                          <th className="p-3 text-center">Cartons Equivalent</th>
-                          <th className="p-3 text-center">Total Units</th>
-                          <th className="p-3 text-right">Total (৳)</th>
-                          <th className="p-3 text-center">Action</th>
+                          <th className="p-2.5">Product Description</th>
+                          <th className="p-2.5 text-right">Unit Price</th>
+                          <th className="p-2.5 text-center">Cartons</th>
+                          <th className="p-2.5 text-center">Total Units</th>
+                          <th className="p-2.5 text-center text-emerald-700">Free Pcs</th>
+                          <th className="p-2.5 text-right text-blue-700">Line Discount</th>
+                          <th className="p-2.5 text-right">Total (৳)</th>
+                          <th className="p-2.5 text-center">Action</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-gray-100">
+                      <tbody className="divide-y divide-slate-100">
                         {items.map(item => (
-                          <tr key={item.productId}>
-                            <td className="p-3 font-semibold text-gray-800">{item.name}</td>
-                            <td className="p-3 text-right">৳{item.price.toFixed(2)}</td>
-                            <td className="p-3 text-center font-semibold text-slate-600">{item.cartonQty.toFixed(1)} Ctn</td>
-                            <td className="p-3 text-center font-bold">{item.qty} Pcs</td>
-                            <td className="p-3 text-right font-bold text-gray-900">৳{item.total.toLocaleString()}</td>
-                            <td className="p-3 text-center">
+                          <tr key={item.productId} className="hover:bg-slate-50/50">
+                            <td className="p-2.5 font-bold text-slate-900">
+                              {item.name}
+                              {item.companyName && <span className="block text-[10px] text-slate-400 font-normal">{item.companyName}</span>}
+                            </td>
+                            <td className="p-2.5 text-right">৳{item.price.toFixed(2)}</td>
+                            <td className="p-2.5 text-center font-semibold text-slate-600">{item.cartonQty.toFixed(1)} Ctn</td>
+                            <td className="p-2.5 text-center font-bold">{item.qty} Pcs</td>
+                            <td className="p-2.5 text-center font-black text-emerald-700 bg-emerald-50/30">
+                              {item.freeQty ? `${item.freeQty} Pcs` : '-'}
+                            </td>
+                            <td className="p-2.5 text-right font-black text-blue-700 bg-blue-50/30">
+                              {item.productDiscount ? `৳${item.productDiscount}` : '-'}
+                            </td>
+                            <td className="p-2.5 text-right font-black text-slate-900">৳{item.total.toLocaleString()}</td>
+                            <td className="p-2.5 text-center">
                               <button
                                 type="button"
                                 onClick={() => handleRemoveItem(item.productId)}
-                                className="text-rose-500 hover:text-rose-600 cursor-pointer"
+                                className="text-rose-500 hover:text-rose-600 p-1 rounded-md hover:bg-rose-50 cursor-pointer"
                               >
                                 <Trash2 className="w-4 h-4 mx-auto" />
                               </button>

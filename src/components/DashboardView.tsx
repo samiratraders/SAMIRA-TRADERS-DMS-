@@ -37,7 +37,8 @@ import {
   collection, 
   getDocs, 
   query, 
-  where 
+  where,
+  onSnapshot
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { SalesInvoice, Collection, Customer, Product, Expense, SubDepotTransaction } from '../types';
@@ -484,6 +485,28 @@ export default function DashboardView({
 
   useEffect(() => {
     loadData();
+
+    // Setup real-time listeners for products, sales, purchases & collections
+    // to instantly reflect inventory adjustments & financial metrics on dashboard
+    const unsubProducts = onSnapshot(collection(db, 'products'), () => {
+      loadData();
+    });
+    const unsubSales = onSnapshot(collection(db, 'sales'), () => {
+      loadData();
+    });
+    const unsubPurchases = onSnapshot(collection(db, 'purchases'), () => {
+      loadData();
+    });
+    const unsubCollections = onSnapshot(collection(db, 'collections'), () => {
+      loadData();
+    });
+
+    return () => {
+      unsubProducts();
+      unsubSales();
+      unsubPurchases();
+      unsubCollections();
+    };
   }, [globalFilters]);
 
   // Export CSV Function

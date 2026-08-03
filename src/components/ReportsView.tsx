@@ -24,7 +24,11 @@ import {
   BarChart2,
   FileDown,
   Lock,
-  ShieldAlert
+  ShieldAlert,
+  Gift,
+  Tag,
+  Search,
+  CreditCard
 } from 'lucide-react';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -66,7 +70,7 @@ interface ReportsViewProps {
 export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewProps) {
   const isAdmin = userRole === UserRole.SUPER_ADMIN || userRole === 'Super Admin' || userRole === UserRole.MANAGER || userRole === 'Manager';
 
-  const [activeReport, setActiveReport] = useState<'sales' | 'collection' | 'stock' | 'profit' | 'expense' | 'dsr' | 'valuation' | 'ledger' | 'supplier' | 'company'>(
+  const [activeReport, setActiveReport] = useState<'sales' | 'collection' | 'stock' | 'profit' | 'expense' | 'dsr' | 'valuation' | 'ledger' | 'supplier' | 'company' | 'damage' | 'free_discount'>(
     isAdmin ? 'profit' : 'sales'
   );
 
@@ -98,6 +102,8 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
   const [selectedCompanyId, setSelectedCompanyId] = useState('');
   const [selectedArea, setSelectedArea] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Sorting State
   const [sortField, setSortField] = useState<string>('date');
@@ -118,13 +124,33 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
     if (endDate && inv.date > endDate) return false;
     if (selectedCustomerId && inv.customerId !== selectedCustomerId) return false;
     if (selectedCompanyId && inv.companyId !== selectedCompanyId) return false;
-    if (selectedRepName && inv.dsrName !== selectedRepName) return false;
+    if (selectedRepName && inv.dsrName !== selectedRepName && inv.createdBy !== selectedRepName) return false;
     if (selectedProductId && !inv.items.some(item => item.productId === selectedProductId)) return false;
     if (selectedArea && inv.area !== selectedArea && inv.route !== selectedArea) return false;
     if (selectedCategory && !inv.items.some(item => {
       const prod = products.find(p => p.id === item.productId);
       return (prod?.category || 'General') === selectedCategory;
     })) return false;
+    if (selectedPaymentMethod) {
+      if (selectedPaymentMethod === 'DUE') {
+        if ((inv.grandTotal - inv.paymentReceived) <= 0 && inv.status !== 'DUE') return false;
+      } else {
+        if (inv.paymentMethod !== selectedPaymentMethod) return false;
+      }
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      const matchInvNo = (inv.invoiceNo || '').toLowerCase().includes(q);
+      const matchShop = (inv.shopName || '').toLowerCase().includes(q);
+      const matchCust = (inv.customerName || '').toLowerCase().includes(q);
+      const matchComp = (inv.companyName || '').toLowerCase().includes(q);
+      const matchRep = (inv.dsrName || inv.createdBy || '').toLowerCase().includes(q);
+      const matchRoute = (inv.route || inv.area || '').toLowerCase().includes(q);
+      const matchItem = inv.items.some(i => (i.name || '').toLowerCase().includes(q));
+      if (!matchInvNo && !matchShop && !matchCust && !matchComp && !matchRep && !matchRoute && !matchItem) {
+        return false;
+      }
+    }
     return true;
   });
 
@@ -165,6 +191,22 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
       );
       if (!hasCategoryPurchase) return false;
     }
+    if (selectedPaymentMethod) {
+      if (col.paymentMethod !== selectedPaymentMethod) return false;
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      const matchColNo = (col.collectionNo || '').toLowerCase().includes(q);
+      const matchShop = (col.shopName || '').toLowerCase().includes(q);
+      const matchRep = (col.collectedByName || '').toLowerCase().includes(q);
+      const matchComp = (col.companyName || '').toLowerCase().includes(q);
+      const matchRef = (col.referenceNo || '').toLowerCase().includes(q);
+      const matchPay = (col.paymentMethod || '').toLowerCase().includes(q);
+      const matchNotes = (col.notes || '').toLowerCase().includes(q);
+      if (!matchColNo && !matchShop && !matchRep && !matchComp && !matchRef && !matchPay && !matchNotes) {
+        return false;
+      }
+    }
     return true;
   });
 
@@ -186,11 +228,24 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
   const filteredExpenses = expenses.filter(exp => {
     if (startDate && exp.date < startDate) return false;
     if (endDate && exp.date > endDate) return false;
-    if (selectedRepName && exp.staffName !== selectedRepName) return false;
+    if (selectedRepName && exp.staffName !== selectedRepName && exp.createdBy !== selectedRepName) return false;
     if (selectedArea && !(
       (exp.description && exp.description.toLowerCase().includes(selectedArea.toLowerCase())) ||
       (exp.routeName && exp.routeName.toLowerCase().includes(selectedArea.toLowerCase()))
     )) return false;
+    if (selectedCategory && exp.category !== selectedCategory) return false;
+    if (selectedPaymentMethod && exp.paymentMethod !== selectedPaymentMethod) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      const matchTitle = (exp.title || '').toLowerCase().includes(q);
+      const matchCat = (exp.category || '').toLowerCase().includes(q);
+      const matchDesc = (exp.description || '').toLowerCase().includes(q);
+      const matchStaff = (exp.staffName || '').toLowerCase().includes(q);
+      const matchRoute = (exp.routeName || '').toLowerCase().includes(q);
+      if (!matchTitle && !matchCat && !matchDesc && !matchStaff && !matchRoute) {
+        return false;
+      }
+    }
     return true;
   });
 
@@ -212,6 +267,16 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
   const filteredSubTrans = subTrans.filter(t => {
     if (startDate && t.date < startDate) return false;
     if (endDate && t.date > endDate) return false;
+    if (selectedRepName && t.createdByName !== selectedRepName) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      const matchId = (t.id || '').toLowerCase().includes(q);
+      const matchDepot = (t.subDepotName || '').toLowerCase().includes(q);
+      const matchItem = t.items.some(i => (i.name || '').toLowerCase().includes(q));
+      if (!matchId && !matchDepot && !matchItem) {
+        return false;
+      }
+    }
     return true;
   });
 
@@ -220,6 +285,10 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
     if (endDate && entry.date > endDate) return false;
     if (selectedCustomerId && entry.customerId !== selectedCustomerId) return false;
     if (selectedCompanyId && entry.companyId !== selectedCompanyId) return false;
+    if (selectedRepName) {
+      const custObj = customers.find(c => c.id === entry.customerId);
+      if (entry.createdBy !== selectedRepName && custObj?.dsrName !== selectedRepName) return false;
+    }
     if (selectedArea) {
       const custObj = customers.find(c => c.id === entry.customerId);
       if (!custObj || (custObj.area !== selectedArea && custObj.route !== selectedArea)) return false;
@@ -233,6 +302,25 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
         });
         if (!hasCategory) return false;
       } else {
+        return false;
+      }
+    }
+    if (selectedPaymentMethod) {
+      if (selectedPaymentMethod === 'DUE') {
+        if (entry.type !== 'INVOICE') return false;
+      } else if (entry.paymentMethod) {
+        if (entry.paymentMethod !== selectedPaymentMethod) return false;
+      }
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      const custObj = customers.find(c => c.id === entry.customerId);
+      const matchRef = (entry.referenceNo || '').toLowerCase().includes(q);
+      const matchShop = (custObj?.shopName || custObj?.name || '').toLowerCase().includes(q);
+      const matchComp = (entry.companyName || '').toLowerCase().includes(q);
+      const matchType = (entry.type || '').toLowerCase().includes(q);
+      const matchNotes = (entry.notes || '').toLowerCase().includes(q);
+      if (!matchRef && !matchShop && !matchComp && !matchType && !matchNotes) {
         return false;
       }
     }
@@ -258,11 +346,23 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
     if (startDate && pur.date < startDate) return false;
     if (endDate && pur.date > endDate) return false;
     if (selectedCompanyId && pur.companyId !== selectedCompanyId) return false;
+    if (selectedRepName && pur.createdBy !== selectedRepName && pur.supplierName !== selectedRepName) return false;
     if (selectedProductId && !pur.items.some(item => item.productId === selectedProductId)) return false;
     if (selectedCategory && !pur.items.some(item => {
       const prod = products.find(p => p.id === item.productId);
       return (prod?.category || 'General') === selectedCategory;
     })) return false;
+    if (selectedPaymentMethod && pur.paymentMethod !== selectedPaymentMethod) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      const matchPurNo = (pur.purchaseNo || '').toLowerCase().includes(q);
+      const matchSup = (pur.supplierName || '').toLowerCase().includes(q);
+      const matchComp = (pur.companyName || '').toLowerCase().includes(q);
+      const matchItem = pur.items.some(i => (i.name || '').toLowerCase().includes(q));
+      if (!matchPurNo && !matchSup && !matchComp && !matchItem) {
+        return false;
+      }
+    }
     return true;
   });
 
@@ -804,6 +904,8 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
           { id: 'stock', label: 'Depot Stock', icon: Warehouse },
           { id: 'expense', label: 'Expenses Summary', icon: FileText, sensitive: true },
           { id: 'dsr', label: 'DSR Sheets', icon: UserCheck },
+          { id: 'damage', label: 'Damage Report (ড্যামেজ)', icon: ShieldAlert },
+          { id: 'free_discount', label: 'Free & Discounts (ফ্রি/ছাড়)', icon: Gift },
           { id: 'valuation', label: 'Inventory Valuation', icon: Warehouse },
         ]
           .filter(tab => !tab.sensitive || isAdmin)
@@ -841,7 +943,22 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-10 gap-3">
+          {/* Quick Search Box */}
+          <div className="space-y-1 sm:col-span-2">
+            <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Quick Search Query</label>
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-2.5" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search ref #, shop, DSR, product, notes..."
+                className="w-full pl-8 pr-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
           {/* Date range from */}
           <div className="space-y-1">
             <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">From Date</label>
@@ -849,7 +966,7 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
               type="date"
               value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
-              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
 
@@ -860,7 +977,7 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
               type="date"
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
-              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-gray-800 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
 
@@ -870,7 +987,7 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
             <select
               value={selectedCustomerId}
               onChange={(e) => setSelectedCustomerId(e.target.value)}
-              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-gray-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-gray-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
               <option value="">All Customer Outlets</option>
               {customers.map(c => (
@@ -885,7 +1002,7 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
             <select
               value={selectedProductId}
               onChange={(e) => setSelectedProductId(e.target.value)}
-              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-gray-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-gray-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
               <option value="">All Products</option>
               {products.map(p => (
@@ -896,17 +1013,19 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
 
           {/* Sales Representative filter */}
           <div className="space-y-1">
-            <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Sales Rep (DSR)</label>
+            <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Sales Rep (DSR / User)</label>
             <select
               value={selectedRepName}
               onChange={(e) => setSelectedRepName(e.target.value)}
-              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-gray-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-gray-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
-              <option value="">All Sales Reps</option>
+              <option value="">All Sales Reps / Users</option>
               {Array.from(new Set([
                 ...invoices.map(i => i.dsrName).filter(Boolean),
+                ...invoices.map(i => i.createdBy).filter(Boolean),
                 ...collections.map(c => c.collectedByName).filter(Boolean),
-                ...expenses.map(e => e.staffName).filter(Boolean)
+                ...expenses.map(e => e.staffName).filter(Boolean),
+                ...expenses.map(e => e.createdBy).filter(Boolean)
               ])).map(name => (
                 <option key={name} value={name}>{name}</option>
               ))}
@@ -919,31 +1038,11 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
             <select
               value={selectedCompanyId}
               onChange={(e) => setSelectedCompanyId(e.target.value)}
-              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-gray-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-gray-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
               <option value="">All Brands</option>
               {companies.map(comp => (
                 <option key={comp.id} value={comp.id}>{comp.name}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Area filter */}
-          <div className="space-y-1">
-            <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Area / Route</label>
-            <select
-              value={selectedArea}
-              onChange={(e) => setSelectedArea(e.target.value)}
-              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-gray-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              <option value="">All Areas</option>
-              {Array.from(new Set([
-                ...customers.map(c => c.area).filter(Boolean),
-                ...customers.map(c => c.route).filter(Boolean),
-                ...invoices.map(i => i.area).filter(Boolean),
-                ...invoices.map(i => i.route).filter(Boolean)
-              ])).map(area => (
-                <option key={area} value={area}>{area}</option>
               ))}
             </select>
           </div>
@@ -954,12 +1053,29 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
             <select
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
-              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-gray-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-gray-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
             >
               <option value="">All Categories</option>
               {Array.from(new Set(products.map(p => p.category || 'General').filter(Boolean))).map(cat => (
                 <option key={cat} value={cat}>{cat}</option>
               ))}
+            </select>
+          </div>
+
+          {/* Payment Method filter */}
+          <div className="space-y-1">
+            <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider">Payment Method</label>
+            <select
+              value={selectedPaymentMethod}
+              onChange={(e) => setSelectedPaymentMethod(e.target.value)}
+              className="w-full p-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-gray-800 font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="">All Payment Methods</option>
+              <option value="CASH">CASH (নগদ)</option>
+              <option value="CHEQUE">CHEQUE (চেক)</option>
+              <option value="BANK_TRANSFER">BANK / ONLINE (ব্যাংক/অনলাইন)</option>
+              <option value="MOBILE_BANKING">MOBILE BANKING (বিকাশ/নগদ)</option>
+              <option value="DUE">DUE / CREDIT (বকেয়া)</option>
             </select>
           </div>
         </div>
@@ -968,19 +1084,21 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
         <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-100">
           <div className="text-gray-400">
             Active conditions: {[
+              searchQuery && `Search: "${searchQuery}"`,
               startDate && 'From: ' + startDate,
               endDate && 'To: ' + endDate,
               selectedCustomerId && 'Customer selected',
               selectedProductId && 'Product selected',
-              selectedRepName && 'Rep: ' + selectedRepName,
+              selectedRepName && 'User/Rep: ' + selectedRepName,
               selectedCompanyId && 'Company selected',
-              selectedArea && 'Area: ' + selectedArea,
-              selectedCategory && 'Category: ' + selectedCategory
+              selectedCategory && 'Category: ' + selectedCategory,
+              selectedPaymentMethod && 'Payment: ' + selectedPaymentMethod
             ].filter(Boolean).join(', ') || 'None (Showing full dataset)'}
           </div>
-          {(startDate || endDate || selectedCustomerId || selectedProductId || selectedRepName || selectedCompanyId || selectedArea || selectedCategory) && (
+          {(searchQuery || startDate || endDate || selectedCustomerId || selectedProductId || selectedRepName || selectedCompanyId || selectedArea || selectedCategory || selectedPaymentMethod) && (
             <button
               onClick={() => {
+                setSearchQuery('');
                 setStartDate('');
                 setEndDate('');
                 setSelectedCustomerId('');
@@ -989,6 +1107,7 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
                 setSelectedCompanyId('');
                 setSelectedArea('');
                 setSelectedCategory('');
+                setSelectedPaymentMethod('');
               }}
               className="text-xs text-rose-600 hover:text-rose-700 font-bold bg-rose-50 hover:bg-rose-100 px-3 py-1.5 rounded-lg border border-rose-200 transition-colors cursor-pointer"
             >
@@ -1816,6 +1935,230 @@ export default function ReportsView({ userRole = 'Super Admin' }: ReportsViewPro
                     </tbody>
                   </table>
                 </div>
+              </div>
+            )}
+
+            {/* 10. Damage Returns Report */}
+            {activeReport === 'damage' && (
+              <div className="space-y-6">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                  <div>
+                    <h3 className="font-extrabold text-slate-900 text-lg flex items-center gap-2">
+                      <ShieldAlert className="w-5 h-5 text-rose-600" />
+                      <span>Damage Product & Return Register (ড্যামেজ পণ্য ও রিটার্ন রিপোর্ট)</span>
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Physical inventory damage stock, returns from market, and damaged claims breakdown.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="p-4 bg-rose-50 rounded-2xl border border-rose-100">
+                    <span className="text-[10px] text-rose-600 font-bold uppercase block">Total Damaged SKUs Recorded</span>
+                    <span className="text-2xl font-black text-rose-900">
+                      {products.filter(p => {
+                        if (selectedCompanyId && p.companyId !== selectedCompanyId) return false;
+                        if (selectedProductId && p.id !== selectedProductId) return false;
+                        return (p.damageStock || 0) > 0;
+                      }).length} SKUs
+                    </span>
+                  </div>
+                  <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100">
+                    <span className="text-[10px] text-amber-700 font-bold uppercase block">Total Damaged Physical Quantity</span>
+                    <span className="text-2xl font-black text-amber-950">
+                      {products.filter(p => {
+                        if (selectedCompanyId && p.companyId !== selectedCompanyId) return false;
+                        if (selectedProductId && p.id !== selectedProductId) return false;
+                        return (p.damageStock || 0) > 0;
+                      }).reduce((sum, p) => sum + (p.damageStock || 0), 0)} Pcs
+                    </span>
+                  </div>
+                  <div className="p-4 bg-slate-900 rounded-2xl text-white shadow-xs">
+                    <span className="text-[10px] text-slate-400 font-bold uppercase block">Total Damaged Value (Purchase Basis)</span>
+                    <span className="text-2xl font-black text-rose-400 font-mono">
+                      ৳{products.filter(p => {
+                        if (selectedCompanyId && p.companyId !== selectedCompanyId) return false;
+                        if (selectedProductId && p.id !== selectedProductId) return false;
+                        return (p.damageStock || 0) > 0;
+                      }).reduce((sum, p) => sum + ((p.damageStock || 0) * (p.purchasePrice || 0)), 0).toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-xs">
+                  <div className="p-4 bg-slate-50 border-b border-slate-200 font-bold text-xs text-slate-800 flex justify-between items-center">
+                    <span>ড্যামেজ পণ্য বিবরণী (Damaged Products Roster)</span>
+                    <span className="text-[10px] text-slate-500 font-normal">* Excluded from fresh sellable inventory</span>
+                  </div>
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200">
+                      <tr>
+                        <th className="p-3">Product Name & SKU</th>
+                        <th className="p-3">Company / Manufacturer</th>
+                        <th className="p-3 text-center">Damaged Qty (Pcs)</th>
+                        <th className="p-3 text-right">Cost Rate (৳)</th>
+                        <th className="p-3 text-right">Retail Value (৳)</th>
+                        <th className="p-3 text-right">Total Damaged Cost (৳)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {products.filter(p => {
+                        if (selectedCompanyId && p.companyId !== selectedCompanyId) return false;
+                        if (selectedProductId && p.id !== selectedProductId) return false;
+                        return (p.damageStock || 0) > 0;
+                      }).length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="p-6 text-center text-slate-400 italic font-medium">
+                            কোনো ড্যামেজ পণ্য রেকর্ড পাওয়া যায়নি। (No physical damage stock recorded)
+                          </td>
+                        </tr>
+                      ) : (
+                        products.filter(p => {
+                          if (selectedCompanyId && p.companyId !== selectedCompanyId) return false;
+                          if (selectedProductId && p.id !== selectedProductId) return false;
+                          return (p.damageStock || 0) > 0;
+                        }).map(p => {
+                          const dmgQty = p.damageStock || 0;
+                          const costVal = dmgQty * (p.purchasePrice || 0);
+                          const retailVal = dmgQty * (p.retailPrice || 0);
+                          return (
+                            <tr key={p.id} className="hover:bg-slate-50">
+                              <td className="p-3 font-bold text-slate-900">{p.name}</td>
+                              <td className="p-3 text-slate-600">{p.companyName || 'N/A'}</td>
+                              <td className="p-3 text-center font-black text-rose-600 bg-rose-50/50">{dmgQty} Pcs</td>
+                              <td className="p-3 text-right">৳{(p.purchasePrice || 0).toLocaleString()}</td>
+                              <td className="p-3 text-right">৳{retailVal.toLocaleString()}</td>
+                              <td className="p-3 text-right font-black text-slate-900">৳{costVal.toLocaleString()}</td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* 11. Free Product & Product-wise Discount Report */}
+            {activeReport === 'free_discount' && (
+              <div className="space-y-6">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                  <div>
+                    <h3 className="font-extrabold text-slate-900 text-lg flex items-center gap-2">
+                      <Gift className="w-5 h-5 text-emerald-600" />
+                      <span>Free Products & Discounts Register (ফ্রি পণ্য ও ডিসকাউন্ট রিপোর্ট)</span>
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Summary of free bonus SKUs given, line-item product discounts, and total invoice concessions.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Calculate Free Pcs and Discounts from Sales Invoices */}
+                {(() => {
+                  let totalFreePcs = 0;
+                  let totalLineDiscount = 0;
+                  let totalInvoiceDiscount = 0;
+
+                  invoices.forEach(inv => {
+                    if (selectedCompanyId && inv.companyId !== selectedCompanyId) return;
+                    if (startDate && inv.date < startDate) return;
+                    if (endDate && inv.date > endDate) return;
+
+                    totalInvoiceDiscount += (inv.discount || 0);
+
+                    (inv.items || []).forEach(item => {
+                      if (selectedProductId && item.productId !== selectedProductId) return;
+                      totalFreePcs += (item.freeQty || 0);
+                      totalLineDiscount += (item.productDiscount || 0);
+                    });
+                  });
+
+                  const grandDiscountsTotal = totalLineDiscount + totalInvoiceDiscount;
+
+                  return (
+                    <>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
+                          <span className="text-[10px] text-emerald-700 font-bold uppercase block">Total Free Bonus Products Given</span>
+                          <span className="text-2xl font-black text-emerald-950">{totalFreePcs.toLocaleString()} Pcs</span>
+                        </div>
+                        <div className="p-4 bg-blue-50 rounded-2xl border border-blue-100">
+                          <span className="text-[10px] text-blue-700 font-bold uppercase block">Product-wise Line Discounts</span>
+                          <span className="text-2xl font-black text-blue-950 font-mono">৳{totalLineDiscount.toLocaleString()}</span>
+                        </div>
+                        <div className="p-4 bg-purple-50 rounded-2xl border border-purple-100">
+                          <span className="text-[10px] text-purple-700 font-bold uppercase block">Total Cash Concessions (Overall)</span>
+                          <span className="text-2xl font-black text-purple-950 font-mono">৳{grandDiscountsTotal.toLocaleString()}</span>
+                        </div>
+                      </div>
+
+                      <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-xs">
+                        <div className="p-4 bg-slate-50 border-b border-slate-200 font-bold text-xs text-slate-800 flex justify-between items-center">
+                          <span>ইনভয়েস ভিত্তিক ফ্রি ও ডিসকাউন্ট তালিকা (Invoice Free & Discount Breakdown)</span>
+                        </div>
+                        <table className="w-full text-xs text-left">
+                          <thead className="bg-slate-100 text-slate-600 font-bold border-b border-slate-200">
+                            <tr>
+                              <th className="p-3">Invoice # / Date</th>
+                              <th className="p-3">Customer / Outlet</th>
+                              <th className="p-3">Company / Route</th>
+                              <th className="p-3 text-center text-emerald-700">Free Pcs</th>
+                              <th className="p-3 text-right text-blue-700">Line Discount</th>
+                              <th className="p-3 text-right text-purple-700">Invoice Discount</th>
+                              <th className="p-3 text-right">Grand Total</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {invoices.filter(inv => {
+                              if (selectedCompanyId && inv.companyId !== selectedCompanyId) return false;
+                              if (startDate && inv.date < startDate) return false;
+                              if (endDate && inv.date > endDate) return false;
+                              return true;
+                            }).length === 0 ? (
+                              <tr>
+                                <td colSpan={7} className="p-6 text-center text-slate-400 italic">
+                                  কোনো বিক্রয় ইনভয়েস ডেটা পাওয়া যায়নি। (No invoices found)
+                                </td>
+                              </tr>
+                            ) : (
+                              invoices.filter(inv => {
+                                if (selectedCompanyId && inv.companyId !== selectedCompanyId) return false;
+                                if (startDate && inv.date < startDate) return false;
+                                if (endDate && inv.date > endDate) return false;
+                                return true;
+                              }).map(inv => {
+                                const invFreePcs = (inv.items || []).reduce((sum, i) => sum + (i.freeQty || 0), 0);
+                                const invLineDisc = (inv.items || []).reduce((sum, i) => sum + (i.productDiscount || 0), 0);
+                                return (
+                                  <tr key={inv.id} className="hover:bg-slate-50">
+                                    <td className="p-3 font-bold text-slate-900">
+                                      {inv.invoiceNo}
+                                      <span className="block text-[10px] text-slate-400 font-normal">{inv.date}</span>
+                                    </td>
+                                    <td className="p-3 font-medium text-slate-800">{inv.shopName || inv.customerName}</td>
+                                    <td className="p-3 text-slate-600">{inv.companyName} ({inv.route || 'Local'})</td>
+                                    <td className="p-3 text-center font-black text-emerald-700 bg-emerald-50/40">
+                                      {invFreePcs > 0 ? `${invFreePcs} Pcs` : '-'}
+                                    </td>
+                                    <td className="p-3 text-right font-black text-blue-700 bg-blue-50/40">
+                                      {invLineDisc > 0 ? `৳${invLineDisc.toLocaleString()}` : '-'}
+                                    </td>
+                                    <td className="p-3 text-right font-black text-purple-700 bg-purple-50/40">
+                                      {inv.discount > 0 ? `৳${inv.discount.toLocaleString()}` : '-'}
+                                    </td>
+                                    <td className="p-3 text-right font-bold text-slate-900">৳{inv.grandTotal.toLocaleString()}</td>
+                                  </tr>
+                                );
+                              })
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             )}
 

@@ -60,6 +60,7 @@ export interface Customer {
   dues: { [companyId: string]: number }; // Company Wise Ledger
   totalDue: number;
   subDepotId?: string; // Optional association with a sub-depot
+  dsrName?: string;
   createdAt: string;
 }
 
@@ -86,6 +87,9 @@ export interface Product {
   wholesalePrice?: number;
   subDistributorPrice?: number;
   dealerPrice?: number;
+  dpPrice?: number;
+  tpPrice?: number;
+  mrp?: number;
   unitMargin?: number;
   cartonMargin?: number;
   openingStock?: number;
@@ -109,6 +113,10 @@ export interface InvoiceItem {
   price: number; // retail price
   total: number;
   cartonQty: number; // calculated: qty / cartonSize
+  freeQty?: number; // Free bonus units
+  productDiscount?: number; // Product-wise cash discount amount in BDT
+  companyId?: string;
+  companyName?: string;
 }
 
 export interface SalesInvoice {
@@ -134,6 +142,7 @@ export interface SalesInvoice {
   dsrName?: string;
   subDepotId?: string; // If sold from sub-depot
   status: 'PAID' | 'PARTIAL' | 'DUE';
+  createdBy?: string;
   createdAt: string;
 }
 
@@ -159,6 +168,7 @@ export interface Purchase {
   paymentPaid: number;
   paymentMethod: 'CASH' | 'BANK_TRANSFER' | 'CREDIT';
   status: 'RECEIVED' | 'ORDERED';
+  createdBy?: string;
   createdAt: string;
   discount?: number;
   transportCost?: number;
@@ -190,6 +200,7 @@ export interface Collection {
   approvedBy?: string;
   approvedByName?: string;
   subDepotId?: string; // Optional association with a sub-depot
+  notes?: string;
   createdAt: string;
 }
 
@@ -205,6 +216,9 @@ export interface CustomerLedgerEntry {
   amount: number;
   balanceAfter: number;
   remarks?: string;
+  notes?: string;
+  paymentMethod?: string;
+  createdBy?: string;
   createdAt: string;
 }
 
@@ -220,6 +234,8 @@ export interface Expense {
   staffId?: string; // applicable if SALARY expense
   staffName?: string;
   subDepotId?: string; // Optional association with a sub-depot
+  createdBy?: string;
+  paymentMethod?: string;
   createdAt: string;
 }
 
@@ -227,9 +243,12 @@ export interface SubDepot {
   id: string; // e.g. 'sub-depot-1', 'sub-depot-2'
   name: string;
   location: string;
+  phone?: string;
   managerId: string;
   managerName: string;
   cartonCommissionRate: number; // Profit earned per carton transferred/sold
+  totalDue?: number; // Total outstanding dues
+  status?: 'APPROVED' | 'PENDING';
   createdAt: string;
 }
 
@@ -250,6 +269,8 @@ export interface SubDepotTransaction {
   items: SubDepotTransactionItem[];
   totalCartons: number;
   commissionEarned: number; // Carton Commission * Commission Rate
+  vehicleFreight?: number; // Vehicle transport cost
+  chalanTotal?: number; // Total Chalan value
   status: 'SENT' | 'APPROVED';
   createdBy: string;
   createdByName: string;

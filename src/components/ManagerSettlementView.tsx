@@ -30,6 +30,7 @@ import { db } from '../lib/firebase';
 import { SalesInvoice, Collection, Expense, Product, Supplier, Purchase, DailySettlement, UserRole, UserProfile } from '../types';
 import { logActivity } from '../lib/activityLogger';
 import { ConnectionStatusBadge } from './ConnectionStatusBadge';
+import PrintWrapper from './PrintWrapper';
 
 // Local interface for DSR Sheets matching DSRView
 interface DSRSheetItem {
@@ -102,6 +103,7 @@ export default function ManagerSettlementView() {
   const [selectedStaffForAudit, setSelectedStaffForAudit] = useState<{ id: string; name: string } | null>(null);
   const [auditEntries, setAuditEntries] = useState<any[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [printModalData, setPrintModalData] = useState<{ type: 'settlement' | 'loadsheet'; data: any; title: string } | null>(null);
 
   // Firestore Connection Diagnostic State
   const [dbState, setDbState] = useState<{ status: 'idle' | 'checking' | 'connected' | 'error'; error?: string; latency?: number }>({ status: 'idle' });
@@ -316,13 +318,13 @@ export default function ManagerSettlementView() {
     prevDateObj.setDate(prevDateObj.getDate() - 1);
     const yesterdayStr = prevDateObj.toISOString().split('T')[0];
 
-    // Yesterday's customer dues (static starting reference 100000 + previous dynamic settlements)
+    // Yesterday's customer dues
     const yesterdaySettlement = dailySettlements.find(ds => ds.date === yesterdayStr);
-    const yesterdayDues = yesterdaySettlement ? yesterdaySettlement.totalCustomerDue : 100000;
+    const yesterdayDues = yesterdaySettlement ? yesterdaySettlement.totalCustomerDue : 0;
 
     // Yesterday's inventory selling value
     const totalInventoryValue = products.reduce((sum, p) => sum + (p.stockCount * p.retailPrice), 0);
-    const yesterdayInventoryVal = yesterdaySettlement ? (yesterdaySettlement.todaySalesValue * 40) : 5500000;
+    const yesterdayInventoryVal = yesterdaySettlement ? (yesterdaySettlement.todaySalesValue * 40) : totalInventoryValue;
 
     // Today's closing inventory = Total current inventory selling value + today's damages returned
     const todayClosingInventoryVal = totalInventoryValue + todayDamageValue;
@@ -335,11 +337,11 @@ export default function ManagerSettlementView() {
       todayClosingInventoryVal,
       yesterdayDues,
       todayClosingCustomerDue,
-      yesterdayExpenses: yesterdaySettlement ? yesterdaySettlement.totalExpenses : 1200,
+      yesterdayExpenses: yesterdaySettlement ? yesterdaySettlement.totalExpenses : 0,
       closingExpenses: totalExpenses,
-      yesterdayDamages: yesterdaySettlement ? yesterdaySettlement.totalDamageValue : 1500,
+      yesterdayDamages: yesterdaySettlement ? yesterdaySettlement.totalDamageValue : 0,
       closingDamages: todayDamageValue,
-      yesterdayDiscounts: yesterdaySettlement ? yesterdaySettlement.totalDiscountValue : 800,
+      yesterdayDiscounts: yesterdaySettlement ? yesterdaySettlement.totalDiscountValue : 0,
       closingDiscounts: todayDiscountValue
     };
   };
@@ -1502,13 +1504,38 @@ export default function ManagerSettlementView() {
             </div>
 
             {/* Workflow Action Panel based on User Role */}
-            <div className="flex justify-end space-x-3 pt-4 border-t items-center bg-slate-50/40 p-4 rounded-2xl border border-slate-100">
+            <div className="flex flex-col sm:flex-row justify-between items-center gap-3 pt-4 border-t bg-slate-50/40 p-4 rounded-2xl border border-slate-100">
               
+              {/* Print Evening Settlement Report Button */}
+              <button
+                type="button"
+                onClick={() => setPrintModalData({
+                  type: 'settlement',
+                  data: {
+                    id: activeSettlement?.id || `settlement-${selectedDate}`,
+                    date: selectedDate,
+                    dsrName: todaySheets.map(s => s.dsrName).filter(Boolean).join(', ') || 'All DSRs',
+                    route: todaySheets.map(s => s.route).filter(Boolean).join(', ') || 'All Routes',
+                    totalCartons: todaySheets.reduce((sum, s) => sum + s.items.reduce((sum2, i) => sum2 + Math.floor(i.assignedUnits / (i.cartonSize || 1)), 0), 0),
+                    totalSales: todaySalesValue,
+                    cashCollected: dsrNetCashCollection,
+                    marketDues: todayNewCustomerDues,
+                    shortageAmount: currentShortage,
+                    items: todaySheets.flatMap(s => s.items)
+                  },
+                  title: 'Evening Settlement Report'
+                })}
+                className="flex items-center space-x-1.5 bg-slate-800 hover:bg-slate-900 text-white font-bold py-2.5 px-4 rounded-xl text-xs shadow-md transition-all cursor-pointer"
+              >
+                <Printer className="w-4 h-4 text-blue-400" />
+                <span>বিকেলের হিসেব প্রিন্ট করুন (Print Settlement)</span>
+              </button>
+
               {/* If no settlement recorded yet today, allow submission (Manager / Admin can submit) */}
               {!activeSettlement ? (
-                <>
-                  <span className="text-xs text-gray-500 italic mr-2">
-                    * আজকের সেটেলমেন্ট ড্রাফট অবস্থায় রয়েছে। অনুগ্রহ করে এডমিন অনুমোদনের জন্য সাবমিট করুন।
+                <div className="flex items-center space-x-2">
+                  <span className="text-xs text-gray-500 italic mr-2 hidden md:inline">
+                    * ড্রাফট অবস্থায় রয়েছে। এডমিন অনুমোদনের জন্য সাবমিট করুন।
                   </span>
                   <button
                     onClick={handleManagerSubmit}
@@ -1517,13 +1544,13 @@ export default function ManagerSettlementView() {
                     <UserCheck className="w-4 h-4" />
                     <span>ম্যানেজার যাচাই পূর্বক সাবমিট করুন (Submit to Admin)</span>
                   </button>
-                </>
+                </div>
               ) : activeSettlement.status === 'submitted' ? (
                 // If submitted, show action buttons
-                <div className="flex flex-col sm:flex-row items-center justify-between w-full gap-3">
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
                   <div className="flex items-center space-x-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 px-3 py-2 rounded-xl">
                     <AlertTriangle className="w-4 h-4 text-amber-500" />
-                    <span>আজকের ডেইলি সেটেলমেন্ট এডমিন যাচাইয়ের জন্য অপেক্ষমাণ।</span>
+                    <span>আজকের ডেলি সেটেলমেন্ট এডমিন যাচাইয়ের জন্য অপেক্ষমাণ।</span>
                   </div>
                   
                   {/* Admin role can approve */}
@@ -1543,9 +1570,9 @@ export default function ManagerSettlementView() {
                 </div>
               ) : (
                 // Approved state
-                <div className="flex items-center space-x-2 text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 px-4 py-2.5 rounded-xl w-full justify-center font-bold">
+                <div className="flex items-center space-x-2 text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 px-4 py-2.5 rounded-xl justify-center font-bold">
                   <CheckCircle className="w-4 h-4 text-emerald-600" />
-                  <span>এই ডেইলি সেটেলমেন্ট ও ক্যাশ রিকনসিলিয়েশন এডমিন কর্তৃক চূড়ান্ত অনুমোদিত ও পোস্টিং সম্পূর্ণ হয়েছে! (Approved & Posted)</span>
+                  <span>ডেইলি সেটেলমেন্ট এডমিন কর্তৃক চূড়ান্ত অনুমোদিত! (Approved & Posted)</span>
                 </div>
               )}
 
@@ -1773,6 +1800,15 @@ export default function ManagerSettlementView() {
             </div>
           </div>
         </div>
+      )}
+
+      {printModalData && (
+        <PrintWrapper
+          type={printModalData.type}
+          title={printModalData.title}
+          data={printModalData.data}
+          onClose={() => setPrintModalData(null)}
+        />
       )}
 
     </div>

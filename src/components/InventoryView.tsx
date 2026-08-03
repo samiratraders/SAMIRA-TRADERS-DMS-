@@ -1073,6 +1073,13 @@ export default function InventoryView() {
     return isDeletedMatch && matchesSearch && matchesBrand && matchesCategory && matchesStatus;
   });
 
+  // Stock Valuation Metrics Calculation
+  const totalPurchaseValue = filteredProducts.reduce((sum, p) => sum + ((p.stockCount || 0) * (p.purchasePrice || 0)), 0);
+  const totalRetailValue = filteredProducts.reduce((sum, p) => sum + ((p.stockCount || 0) * (p.retailPrice || 0)), 0);
+  const totalDamageValue = filteredProducts.reduce((sum, p) => sum + (((p.damageStock || 0)) * (p.purchasePrice || 0)), 0);
+  const lowStockCount = filteredProducts.filter(p => p.stockCount <= (p.minimumStock || p.reorderLevel || 10)).length;
+  const totalUnitsInStock = filteredProducts.reduce((sum, p) => sum + (p.stockCount || 0), 0);
+
   return (
     <div className="space-y-6" id="inventory-module">
       
@@ -1245,6 +1252,70 @@ export default function InventoryView() {
             />
             <span>Show Archived</span>
           </label>
+        </div>
+      </div>
+
+      {/* Primary Inventory KPI Stock Valuation Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" id="inventory-valuation-kpis">
+        {/* Card 1: Total Purchase Stock Valuation */}
+        <div className="bg-gradient-to-br from-indigo-900 to-slate-900 text-white p-4.5 rounded-2xl border border-indigo-800/50 shadow-md">
+          <div className="flex justify-between items-start">
+            <div>
+              <span className="text-[10px] font-extrabold text-indigo-300 uppercase tracking-wider block">মোট স্টক মূল্য (পারচেজ মূল্যে)</span>
+              <h3 className="text-xl font-black font-mono text-white mt-1">৳{totalPurchaseValue.toLocaleString()}</h3>
+            </div>
+            <div className="p-2.5 bg-indigo-500/20 rounded-xl text-indigo-300 border border-indigo-400/20">
+              <Warehouse className="w-5 h-5" />
+            </div>
+          </div>
+          <p className="text-[10px] text-indigo-200/70 mt-2 font-medium">ক্রয়মূল্যের ভিত্তিতে গুদামের বর্তমান মোট ইনভেন্টরি ভ্যালু</p>
+        </div>
+
+        {/* Card 2: Total Retail Stock Valuation */}
+        <div className="bg-gradient-to-br from-blue-600 to-indigo-700 text-white p-4.5 rounded-2xl border border-blue-500/50 shadow-md">
+          <div className="flex justify-between items-start">
+            <div>
+              <span className="text-[10px] font-extrabold text-blue-200 uppercase tracking-wider block">মোট সম্ভাব্য বিক্রি মূল্য (রিটেল ভ্যালু)</span>
+              <h3 className="text-xl font-black font-mono text-white mt-1">৳{totalRetailValue.toLocaleString()}</h3>
+            </div>
+            <div className="p-2.5 bg-white/10 rounded-xl text-white border border-white/20">
+              <Package className="w-5 h-5" />
+            </div>
+          </div>
+          <p className="text-[10px] text-blue-100/80 mt-2 font-medium">সম্পূর্ণ স্টক বাজারমূল্যে বিক্রি হলে সম্ভাব্য টার্নওভার</p>
+        </div>
+
+        {/* Card 3: Total Damage Stock Valuation */}
+        <div className="bg-gradient-to-br from-rose-50 to-red-100/60 p-4.5 rounded-2xl border border-rose-200 shadow-sm text-rose-950">
+          <div className="flex justify-between items-start">
+            <div>
+              <span className="text-[10px] font-extrabold text-rose-700 uppercase tracking-wider block">ক্ষতিগ্রস্ত/ড্যামেজ স্টক ভ্যালু</span>
+              <h3 className="text-xl font-black font-mono text-rose-900 mt-1">৳{totalDamageValue.toLocaleString()}</h3>
+            </div>
+            <div className="p-2.5 bg-rose-200/50 rounded-xl text-rose-700">
+              <Archive className="w-5 h-5" />
+            </div>
+          </div>
+          <p className="text-[10px] text-rose-600 mt-2 font-medium">নষ্ট বা ড্যামেজ হওয়া প্রোডাক্টের মোট ইনভেন্টরি মূল্য</p>
+        </div>
+
+        {/* Card 4: Total Active SKUs & Low Stock Alerts */}
+        <div className="bg-white p-4.5 rounded-2xl border border-slate-100 shadow-sm text-slate-800">
+          <div className="flex justify-between items-start">
+            <div>
+              <span className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider block">মোট প্রোডাক্ট ও স্টক পিস</span>
+              <h3 className="text-xl font-black font-mono text-slate-900 mt-1">{totalUnitsInStock.toLocaleString()} Pcs</h3>
+            </div>
+            <div className="p-2.5 bg-amber-50 rounded-xl text-amber-600 border border-amber-100">
+              <Layers className="w-5 h-5" />
+            </div>
+          </div>
+          <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-100 text-[10px]">
+            <span className="text-slate-500">মোট আইটেম: <strong>{filteredProducts.length}টি</strong></span>
+            <span className="text-amber-700 font-extrabold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+              {lowStockCount}টি লো স্টক
+            </span>
+          </div>
         </div>
       </div>
 

@@ -17,12 +17,49 @@ import {
   RefreshCw,
   Save,
   X,
-  UserCheck
+  UserCheck,
+  MessageSquare,
+  Send,
+  Copy,
+  Check,
+  ExternalLink,
+  Share2,
+  Phone,
+  Smartphone,
+  ShieldCheck,
+  BarChart3,
+  Calendar,
+  AlertTriangle,
+  Printer,
+  FileText,
+  Layers,
+  CreditCard,
+  Building2,
+  Users,
+  ChevronDown,
+  ChevronUp,
+  FileSpreadsheet
 } from 'lucide-react';
 import { collection, getDocs, doc, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { Collection, Customer, Company, UserRole } from '../types';
+import { Collection, Customer, Company, UserRole, SalesInvoice } from '../types';
 import { logActivity } from '../lib/activityLogger';
+import PrintWrapper from './PrintWrapper';
+
+export interface NotificationModalData {
+  collectionNo: string;
+  shopName: string;
+  customerName: string;
+  phone: string;
+  amount: number;
+  companyName: string;
+  date: string;
+  paymentMethod: string;
+  referenceNo?: string;
+  remainingDue: number;
+  route?: string;
+  area?: string;
+}
 
 interface CollectionViewProps {
   userRole: UserRole;
@@ -32,6 +69,7 @@ interface CollectionViewProps {
 
 export default function CollectionView({ userRole, userId, userName }: CollectionViewProps) {
   const [collections, setCollections] = useState<Collection[]>([]);
+  const [salesInvoices, setSalesInvoices] = useState<SalesInvoice[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
@@ -43,6 +81,13 @@ export default function CollectionView({ userRole, userId, userName }: Collectio
 
   const [routes, setRoutes] = useState<string[]>([]);
   const [areas, setAreas] = useState<string[]>([]);
+
+  // Collection Audit Feature State
+  const [auditDate, setAuditDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [auditRepFilter, setAuditRepFilter] = useState<string>('');
+  const [auditCompanyFilter, setAuditCompanyFilter] = useState<string>('');
+  const [isAuditExpanded, setIsAuditExpanded] = useState<boolean>(true);
+  const [printAuditReport, setPrintAuditReport] = useState<any>(null);
 
   // Modals
   const [isCollectModalOpen, setIsCollectModalOpen] = useState(false);
@@ -63,15 +108,55 @@ export default function CollectionView({ userRole, userId, userName }: Collectio
   const [multiReferenceNo, setMultiReferenceNo] = useState('');
   const [multiCollectionDate, setMultiCollectionDate] = useState(new Date().toISOString().split('T')[0]);
 
+  // Automated Notification Trigger Modal State
+  const [notificationModalData, setNotificationModalData] = useState<NotificationModalData | null>(null);
+  const [notificationPhone, setNotificationPhone] = useState('');
+  const [isCopied, setIsCopied] = useState(false);
+
+  useEffect(() => {
+    if (notificationModalData) {
+      setNotificationPhone(notificationModalData.phone || '');
+      setIsCopied(false);
+    }
+  }, [notificationModalData]);
+
+  const formatWhatsAppPhone = (phoneStr?: string): string => {
+    if (!phoneStr) return '';
+    let cleaned = phoneStr.replace(/\D/g, '');
+    if (cleaned.startsWith('880')) return cleaned;
+    if (cleaned.startsWith('0')) return '88' + cleaned;
+    if (cleaned.length === 10 && cleaned.startsWith('1')) return '880' + cleaned;
+    return cleaned;
+  };
+
+  const generateNotificationMessage = (data: NotificationModalData) => {
+    const pMethodName = data.paymentMethod === 'CASH' ? 'নগদ জমা (Cash)' : data.paymentMethod === 'MOBILE_BANKING' ? 'মোবাইল ব্যাংকিং (bKash/Nagad)' : 'ব্যাংক চেক (Cheque)';
+    return (
+      `*সামীরা ট্রেডার্স (Samira Traders)*\n` +
+      `*পেমেন্ট প্রাপ্তি নিশ্চিতকরণ (Payment Receipt)*\n` +
+      `---------------------------------\n` +
+      `*রসিদ নং:* ${data.collectionNo}\n` +
+      `*আউটলেট:* ${data.shopName} (${data.customerName})\n` +
+      `*তারিখ:* ${data.date}\n` +
+      `*ব্র্যান্ড/কোম্পানি:* ${data.companyName}\n` +
+      `*প্রাপ্ত পেমেন্ট:* ৳${data.amount.toLocaleString()} [${pMethodName}]\n` +
+      (data.referenceNo ? `*রেফারেন্স/মেমো:* ${data.referenceNo}\n` : '') +
+      `*অবশিষ্ট মোট বকেয়া:* ৳${data.remainingDue.toLocaleString()}\n` +
+      `---------------------------------\n` +
+      `আপনার পেমেন্ট সফলভাবে সংরক্ষিত হয়েছে। আমাদের সাথে ব্যবসা করার জন্য ধন্যবাদ!`
+    );
+  };
+
   const loadData = async () => {
     try {
       setLoading(true);
       
-      // Fetch companies, customers, and collections in parallel
-      const [compSnap, custSnap, colSnap] = await Promise.all([
+      // Fetch companies, customers, collections, and sales invoices in parallel
+      const [compSnap, custSnap, colSnap, salesSnap] = await Promise.all([
         getDocs(collection(db, 'companies')),
         getDocs(collection(db, 'customers')),
-        getDocs(collection(db, 'collections'))
+        getDocs(collection(db, 'collections')),
+        getDocs(collection(db, 'sales'))
       ]);
 
       const compList: Company[] = [];
@@ -87,6 +172,11 @@ export default function CollectionView({ userRole, userId, userName }: Collectio
       colList.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       setCollections(colList);
 
+      const salesList: SalesInvoice[] = [];
+      salesSnap.forEach(d => salesList.push(d.data() as SalesInvoice));
+      salesList.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+      setSalesInvoices(salesList);
+
       // Compile unique routes & areas
       const uniqueRoutes = Array.from(new Set(custList.map(c => c.route).filter(Boolean)));
       const uniqueAreas = Array.from(new Set(custList.map(c => c.area).filter(Boolean)));
@@ -94,7 +184,160 @@ export default function CollectionView({ userRole, userId, userName }: Collectio
       setAreas(uniqueAreas);
 
     } catch (err) {
-      console.error('Error loading collections:', err);
+      console.error('Error loading collections and sales audit logs:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Collection Audit Daily Reconciliation Computation
+  const getDailyAuditMetrics = () => {
+    const isAllDates = auditDate === 'ALL';
+
+    // 1. Filter sales invoices for selected date & rep/company
+    const filteredInvoices = salesInvoices.filter(inv => {
+      const invDate = inv.date ? inv.date.split('T')[0] : '';
+      const dateMatch = isAllDates || invDate === auditDate;
+      const repMatch = !auditRepFilter || inv.dsrId === auditRepFilter || inv.dsrName === auditRepFilter;
+      const compMatch = !auditCompanyFilter || inv.companyId === auditCompanyFilter;
+      return dateMatch && repMatch && compMatch;
+    });
+
+    // 2. Filter collections for selected date & rep/company
+    const filteredCols = collections.filter(col => {
+      const colDate = col.date ? col.date.split('T')[0] : '';
+      const dateMatch = isAllDates || colDate === auditDate;
+      const repMatch = !auditRepFilter || col.collectedById === auditRepFilter || col.collectedByName === auditRepFilter;
+      const compMatch = !auditCompanyFilter || col.companyId === auditCompanyFilter;
+      return dateMatch && repMatch && compMatch;
+    });
+
+    // Invoiced Totals
+    const totalInvoicedSales = filteredInvoices.reduce((sum, inv) => sum + (inv.grandTotal || 0), 0);
+    const invoiceCashCollected = filteredInvoices.reduce((sum, inv) => sum + (inv.paymentReceived || 0), 0);
+    const invoiceCreditIncurred = Math.max(0, totalInvoicedSales - invoiceCashCollected);
+
+    // Ledger Dues Collections
+    const collectionsReceived = filteredCols.reduce((sum, col) => sum + (col.amount || 0), 0);
+    const collectionsApproved = filteredCols.filter(c => c.status === 'APPROVED').reduce((sum, c) => sum + (c.amount || 0), 0);
+    const collectionsPending = filteredCols.filter(c => c.status !== 'APPROVED').reduce((sum, c) => sum + (c.amount || 0), 0);
+
+    // Total Cash Inflow (Immediate Invoice Cash + Ledger Collections Received)
+    const totalCashInflow = invoiceCashCollected + collectionsReceived;
+
+    // Payment Channel Breakdown
+    let cashTotal = 0;
+    let mobileTotal = 0;
+    let chequeTotal = 0;
+
+    filteredInvoices.forEach(inv => {
+      if (inv.paymentMethod === 'CASH') cashTotal += (inv.paymentReceived || 0);
+      else if (inv.paymentMethod === 'MOBILE_BANKING') mobileTotal += (inv.paymentReceived || 0);
+      else if (inv.paymentMethod === 'CHEQUE') chequeTotal += (inv.paymentReceived || 0);
+      else cashTotal += (inv.paymentReceived || 0);
+    });
+
+    filteredCols.forEach(col => {
+      if (col.paymentMethod === 'CASH') cashTotal += col.amount;
+      else if (col.paymentMethod === 'MOBILE_BANKING') mobileTotal += col.amount;
+      else if (col.paymentMethod === 'CHEQUE') chequeTotal += col.amount;
+      else cashTotal += col.amount;
+    });
+
+    // Rep-wise (DSR/Collector) Reconciliation Mapping
+    const repMap: { [repName: string]: {
+      repName: string;
+      invoicesCount: number;
+      invoicedTotal: number;
+      salesCash: number;
+      duesCollected: number;
+      totalHandled: number;
+      approvedAmount: number;
+      pendingAmount: number;
+    } } = {};
+
+    filteredInvoices.forEach(inv => {
+      const repKey = inv.dsrName || 'Spot Cashier / Store Direct';
+      if (!repMap[repKey]) {
+        repMap[repKey] = { repName: repKey, invoicesCount: 0, invoicedTotal: 0, salesCash: 0, duesCollected: 0, totalHandled: 0, approvedAmount: 0, pendingAmount: 0 };
+      }
+      repMap[repKey].invoicesCount += 1;
+      repMap[repKey].invoicedTotal += (inv.grandTotal || 0);
+      repMap[repKey].salesCash += (inv.paymentReceived || 0);
+      repMap[repKey].totalHandled += (inv.paymentReceived || 0);
+    });
+
+    filteredCols.forEach(col => {
+      const repKey = col.collectedByName || 'Field Representative';
+      if (!repMap[repKey]) {
+        repMap[repKey] = { repName: repKey, invoicesCount: 0, invoicedTotal: 0, salesCash: 0, duesCollected: 0, totalHandled: 0, approvedAmount: 0, pendingAmount: 0 };
+      }
+      repMap[repKey].duesCollected += col.amount;
+      repMap[repKey].totalHandled += col.amount;
+      if (col.status === 'APPROVED') {
+        repMap[repKey].approvedAmount += col.amount;
+      } else {
+        repMap[repKey].pendingAmount += col.amount;
+      }
+    });
+
+    const repSummaryList = Object.values(repMap);
+
+    return {
+      filteredInvoices,
+      filteredCols,
+      totalInvoicedSales,
+      invoiceCashCollected,
+      invoiceCreditIncurred,
+      collectionsReceived,
+      collectionsApproved,
+      collectionsPending,
+      totalCashInflow,
+      cashTotal,
+      mobileTotal,
+      chequeTotal,
+      repSummaryList
+    };
+  };
+
+  const handleApproveAllPendingForDate = async () => {
+    const auditMetrics = getDailyAuditMetrics();
+    const pendingCols = auditMetrics.filteredCols.filter(c => c.status !== 'APPROVED');
+
+    if (pendingCols.length === 0) {
+      alert('There are no pending collections to approve for the selected audit date/filters.');
+      return;
+    }
+
+    const dateLabel = auditDate === 'ALL' ? 'all dates' : auditDate;
+    const confirmMsg = `Are you sure you want to batch approve all ${pendingCols.length} pending collections for ${dateLabel} totaling ৳${auditMetrics.collectionsPending.toLocaleString()}?`;
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      setLoading(true);
+      const batch = writeBatch(db);
+      pendingCols.forEach(c => {
+        batch.update(doc(db, 'collections', c.id), {
+          status: 'APPROVED',
+          approvedBy: userId,
+          approvedByName: userName
+        });
+      });
+      await batch.commit();
+
+      await logActivity(
+        userId,
+        userName,
+        userRole,
+        'PAYMENT_ENTRY',
+        `Batch approved ${pendingCols.length} collections for audit date ${auditDate} - Total: ৳${auditMetrics.collectionsPending}`,
+        { auditDate, count: pendingCols.length, total: auditMetrics.collectionsPending }
+      );
+
+      loadData();
+    } catch (err) {
+      console.error('Error batch approving collections:', err);
+      alert('Failed to batch approve pending collections.');
     } finally {
       setLoading(false);
     }
@@ -210,6 +453,23 @@ export default function CollectionView({ userRole, userId, userName }: Collectio
       );
 
       setIsCollectModalOpen(false);
+      
+      // Automatically trigger WhatsApp / SMS Payment Received Notification
+      setNotificationModalData({
+        collectionNo,
+        shopName: customerObj.shopName,
+        customerName: customerObj.name,
+        phone: customerObj.phone || '',
+        amount,
+        companyName: companyObj.name,
+        date: collectionDate,
+        paymentMethod,
+        referenceNo: referenceNo || '',
+        remainingDue: updatedCompanyDue,
+        route: customerObj.route,
+        area: customerObj.area
+      });
+
       loadData();
     } catch (err) {
       console.error('Error logging payment collection:', err);
@@ -320,10 +580,29 @@ export default function CollectionView({ userRole, userId, userName }: Collectio
         { customerId: multiCustomerId, totalAmount: totalRec }
       );
 
+      const brandNames = paymentsToProcess.map(p => p.companyObj?.name).filter(Boolean).join(', ');
+
       setIsMultiCollectModalOpen(false);
       setMultiCustomerId('');
       setMultiAmounts({});
       setMultiReferenceNo('');
+
+      // Automatically trigger WhatsApp / SMS Payment Received Notification
+      setNotificationModalData({
+        collectionNo: 'COL-MULTI-' + Date.now().toString().slice(-6),
+        shopName: customerObj.shopName,
+        customerName: customerObj.name,
+        phone: customerObj.phone || '',
+        amount: totalRec,
+        companyName: brandNames || 'Multiple Partner Brands',
+        date: multiCollectionDate,
+        paymentMethod: multiPaymentMethod,
+        referenceNo: multiReferenceNo || '',
+        remainingDue: updatedTotalDue,
+        route: customerObj.route,
+        area: customerObj.area
+      });
+
       loadData();
     } catch (err: any) {
       console.error('Error logging multi payment collection:', err);
@@ -407,8 +686,8 @@ export default function CollectionView({ userRole, userId, userName }: Collectio
     <div className="space-y-6" id="collections-module">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Payments Collection</h2>
-          <p className="text-sm text-gray-500">Receive outlet cash payments, handle field-rep handovers, and execute manager approvals</p>
+          <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Payments Collection & Vault Audit</h2>
+          <p className="text-sm text-gray-500">Receive outlet cash payments, perform daily cash-to-invoice audits, and approve field-rep handovers</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -434,6 +713,305 @@ export default function CollectionView({ userRole, userId, userName }: Collectio
           </button>
         </div>
       </div>
+
+      {/* COLLECTION AUDIT & DAILY RECONCILIATION PANEL */}
+      {(() => {
+        const audit = getDailyAuditMetrics();
+        const todayStr = new Date().toISOString().split('T')[0];
+        const yesterdayStr = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+        // Unique field reps from both collections and sales
+        const fieldRepsList = Array.from(new Set([
+          ...collections.map(c => c.collectedByName).filter(Boolean),
+          ...salesInvoices.map(s => s.dsrName).filter(Boolean)
+        ]));
+
+        return (
+          <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white rounded-2xl shadow-xl border border-slate-800 p-5 space-y-5" id="collection-audit-panel">
+            {/* Header & Controls Bar */}
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-700/80 pb-4">
+              <div className="flex items-center space-x-3">
+                <div className="p-2.5 bg-emerald-500/20 border border-emerald-400/30 rounded-xl text-emerald-300">
+                  <ShieldCheck className="w-6 h-6 animate-pulse" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-bold text-white">Daily Collection Audit & Reconciliation</h3>
+                    <span className="text-[10px] bg-emerald-500/30 text-emerald-200 border border-emerald-400/30 px-2 py-0.5 rounded-full font-bold">
+                      Real-time Vault Log
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300">Comparing cash sales invoice totals against collected receipts & field rep vault handovers</p>
+                </div>
+              </div>
+
+              {/* Audit Date & Filter Controls */}
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Date Quick Presets */}
+                <div className="flex items-center bg-slate-800 p-1 rounded-xl border border-slate-700 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setAuditDate(todayStr)}
+                    className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
+                      auditDate === todayStr ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    Today
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAuditDate(yesterdayStr)}
+                    className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
+                      auditDate === yesterdayStr ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    Yesterday
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAuditDate('ALL')}
+                    className={`px-2.5 py-1 rounded-lg font-bold transition-all ${
+                      auditDate === 'ALL' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    All Dates
+                  </button>
+                </div>
+
+                {/* Custom Date Picker */}
+                <div className="flex items-center space-x-1 bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-700 text-xs">
+                  <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <input
+                    type="date"
+                    value={auditDate === 'ALL' ? '' : auditDate}
+                    onChange={(e) => setAuditDate(e.target.value || 'ALL')}
+                    className="bg-transparent text-white focus:outline-none cursor-pointer"
+                  />
+                </div>
+
+                {/* Field Rep Filter */}
+                <select
+                  value={auditRepFilter}
+                  onChange={(e) => setAuditRepFilter(e.target.value)}
+                  className="bg-slate-800 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none"
+                >
+                  <option value="">All Field Representatives</option>
+                  {fieldRepsList.map(rep => (
+                    <option key={rep} value={rep}>{rep}</option>
+                  ))}
+                </select>
+
+                {/* Toggle Detail Expansion */}
+                <button
+                  type="button"
+                  onClick={() => setIsAuditExpanded(!isAuditExpanded)}
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-200 p-2 rounded-xl border border-slate-700 transition-colors cursor-pointer"
+                  title={isAuditExpanded ? "Collapse Audit Breakdown" : "Expand Audit Breakdown"}
+                >
+                  {isAuditExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Audit Summary Stat Cards Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {/* Card 1: Invoiced Sales Summary */}
+              <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700 space-y-1">
+                <div className="flex items-center justify-between text-slate-400 text-[10px] uppercase font-bold tracking-wider">
+                  <span>Daily Invoiced Sales</span>
+                  <BarChart3 className="w-4 h-4 text-indigo-400" />
+                </div>
+                <p className="text-xl font-black text-white">৳{audit.totalInvoicedSales.toLocaleString('bn-BD', { minimumFractionDigits: 2 })}</p>
+                <div className="flex items-center justify-between text-[11px] text-slate-300 pt-1 border-t border-slate-700/60">
+                  <span>Paid Spot: <strong className="text-emerald-400">৳{audit.invoiceCashCollected.toLocaleString()}</strong></span>
+                  <span>Credit: <strong className="text-rose-400">৳{audit.invoiceCreditIncurred.toLocaleString()}</strong></span>
+                </div>
+              </div>
+
+              {/* Card 2: Total Cash & Digital Collections */}
+              <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700 space-y-1">
+                <div className="flex items-center justify-between text-slate-400 text-[10px] uppercase font-bold tracking-wider">
+                  <span>Total Cash Inflow</span>
+                  <DollarSign className="w-4 h-4 text-emerald-400" />
+                </div>
+                <p className="text-xl font-black text-emerald-400">৳{audit.totalCashInflow.toLocaleString('bn-BD', { minimumFractionDigits: 2 })}</p>
+                <div className="flex items-center justify-between text-[11px] text-slate-300 pt-1 border-t border-slate-700/60">
+                  <span>Ledger Dues Recv: <strong className="text-emerald-300">৳{audit.collectionsReceived.toLocaleString()}</strong></span>
+                </div>
+              </div>
+
+              {/* Card 3: Payment Channel Breakdown */}
+              <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700 space-y-1">
+                <div className="flex items-center justify-between text-slate-400 text-[10px] uppercase font-bold tracking-wider">
+                  <span>Channel Breakdown</span>
+                  <CreditCard className="w-4 h-4 text-sky-400" />
+                </div>
+                <div className="text-xs space-y-0.5 pt-0.5">
+                  <div className="flex justify-between text-slate-200">
+                    <span>💵 Cash:</span>
+                    <strong className="font-mono">৳{audit.cashTotal.toLocaleString()}</strong>
+                  </div>
+                  <div className="flex justify-between text-sky-300">
+                    <span>📱 Mobile Banking:</span>
+                    <strong className="font-mono">৳{audit.mobileTotal.toLocaleString()}</strong>
+                  </div>
+                  <div className="flex justify-between text-amber-300">
+                    <span>🏦 Cheque:</span>
+                    <strong className="font-mono">৳{audit.chequeTotal.toLocaleString()}</strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 4: Manager Vault & Approval Reconciliation */}
+              <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700 space-y-1">
+                <div className="flex items-center justify-between text-slate-400 text-[10px] uppercase font-bold tracking-wider">
+                  <span>Vault Verification</span>
+                  <UserCheck className="w-4 h-4 text-amber-400" />
+                </div>
+                <div className="flex items-baseline justify-between">
+                  <span className="text-xl font-black text-emerald-400">৳{audit.collectionsApproved.toLocaleString()}</span>
+                  <span className="text-[10px] text-slate-400 font-bold">Approved</span>
+                </div>
+                <div className="flex items-center justify-between text-[11px] pt-1 border-t border-slate-700/60">
+                  <span className="text-amber-300 flex items-center gap-1 font-bold">
+                    <Clock className="w-3 h-3" />
+                    <span>Pending Manager Approval:</span>
+                  </span>
+                  <span className="font-black text-amber-400 font-mono">৳{audit.collectionsPending.toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Expanded Detailed Audit Reconciliation View */}
+            {isAuditExpanded && (
+              <div className="space-y-4 pt-2 border-t border-slate-700/80">
+                {/* Rep-Wise Reconciliation Audit Table */}
+                <div>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+                    <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                      <Users className="w-4 h-4 text-emerald-400" />
+                      <span>Field Representative Cash & Collection Reconciliation Audit ({audit.repSummaryList.length} Reps)</span>
+                    </h4>
+
+                    <div className="flex items-center space-x-2">
+                      {audit.collectionsPending > 0 && (userRole === UserRole.SUPER_ADMIN || userRole === UserRole.MANAGER || userRole === UserRole.ACCOUNTANT) && (
+                        <button
+                          type="button"
+                          onClick={handleApproveAllPendingForDate}
+                          className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1 rounded-lg text-xs font-bold flex items-center space-x-1 transition-all cursor-pointer shadow-xs"
+                        >
+                          <CheckCircle className="w-3.5 h-3.5" />
+                          <span>Batch Approve Pending (৳{audit.collectionsPending.toLocaleString()})</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPrintAuditReport({
+                            date: auditDate,
+                            metrics: audit
+                          });
+                        }}
+                        className="bg-slate-700 hover:bg-slate-600 text-white px-3 py-1 rounded-lg text-xs font-bold flex items-center space-x-1 transition-colors cursor-pointer"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        <span>Print Audit Summary</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {audit.repSummaryList.length === 0 ? (
+                    <div className="p-4 bg-slate-800/50 rounded-xl text-center text-xs text-slate-400">
+                      No sales or collections logged for the selected date or rep filter.
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto rounded-xl border border-slate-700">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-800 text-slate-300 font-bold uppercase text-[10px] tracking-wider border-b border-slate-700">
+                          <tr>
+                            <th className="p-3">Field Representative</th>
+                            <th className="p-3 text-right">Invoices / Value</th>
+                            <th className="p-3 text-right">Spot Invoice Cash</th>
+                            <th className="p-3 text-right">Dues Collections</th>
+                            <th className="p-3 text-right">Total Cash Handled</th>
+                            <th className="p-3 text-center">Approved Vault</th>
+                            <th className="p-3 text-center">Pending Handover</th>
+                            <th className="p-3 text-center">Audit Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-700/60 bg-slate-800/40 text-slate-200">
+                          {audit.repSummaryList.map((r, idx) => {
+                            const isBalanced = r.pendingAmount === 0;
+                            return (
+                              <tr key={idx} className="hover:bg-slate-800/80 transition-colors">
+                                <td className="p-3 font-bold text-white flex items-center space-x-1.5">
+                                  <UserCheck className="w-3.5 h-3.5 text-slate-400" />
+                                  <span>{r.repName}</span>
+                                </td>
+                                <td className="p-3 text-right font-mono">
+                                  <span className="block font-bold text-slate-200">৳{r.invoicedTotal.toLocaleString()}</span>
+                                  <span className="text-[10px] text-slate-400">{r.invoicesCount} Invoices</span>
+                                </td>
+                                <td className="p-3 text-right font-mono text-emerald-400 font-bold">
+                                  ৳{r.salesCash.toLocaleString()}
+                                </td>
+                                <td className="p-3 text-right font-mono text-sky-300 font-bold">
+                                  ৳{r.duesCollected.toLocaleString()}
+                                </td>
+                                <td className="p-3 text-right font-mono text-white font-black">
+                                  ৳{r.totalHandled.toLocaleString()}
+                                </td>
+                                <td className="p-3 text-center font-mono text-emerald-400">
+                                  ৳{r.approvedAmount.toLocaleString()}
+                                </td>
+                                <td className="p-3 text-center font-mono text-amber-400 font-bold">
+                                  ৳{r.pendingAmount.toLocaleString()}
+                                </td>
+                                <td className="p-3 text-center">
+                                  {isBalanced ? (
+                                    <span className="inline-flex items-center space-x-1 bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      <CheckCircle className="w-3 h-3" />
+                                      <span>Vault Verified</span>
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center space-x-1 bg-amber-500/20 text-amber-300 border border-amber-400/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold animate-pulse">
+                                      <Clock className="w-3 h-3" />
+                                      <span>Approval Pending</span>
+                                    </span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                        <tfoot className="bg-slate-900 text-white font-black text-xs border-t-2 border-slate-700">
+                          <tr>
+                            <td className="p-3">Audit Grand Total</td>
+                            <td className="p-3 text-right font-mono text-indigo-300">৳{audit.totalInvoicedSales.toLocaleString()}</td>
+                            <td className="p-3 text-right font-mono text-emerald-400">৳{audit.invoiceCashCollected.toLocaleString()}</td>
+                            <td className="p-3 text-right font-mono text-sky-300">৳{audit.collectionsReceived.toLocaleString()}</td>
+                            <td className="p-3 text-right font-mono text-emerald-300 text-sm">৳{audit.totalCashInflow.toLocaleString()}</td>
+                            <td className="p-3 text-center font-mono text-emerald-400">৳{audit.collectionsApproved.toLocaleString()}</td>
+                            <td className="p-3 text-center font-mono text-amber-400">৳{audit.collectionsPending.toLocaleString()}</td>
+                            <td className="p-3 text-center">
+                              {audit.collectionsPending === 0 ? (
+                                <span className="text-[10px] text-emerald-400 uppercase font-bold">100% Reconciled</span>
+                              ) : (
+                                <span className="text-[10px] text-amber-300 uppercase font-bold">Reconciliation Action Required</span>
+                              )}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Filters Toolbar */}
       <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm flex flex-col md:flex-row md:items-center gap-4">
@@ -522,31 +1100,59 @@ export default function CollectionView({ userRole, userId, userName }: Collectio
                       </span>
                     </td>
                     <td className="px-6 py-4 text-center">
-                      {/* DSR workflow: pending -> transfer to manager */}
-                      {col.status === 'PENDING' && col.collectedById === userId && (
+                      <div className="flex items-center justify-center space-x-2">
                         <button
-                          onClick={() => handleTransferToManager(col.id)}
-                          className="bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer"
+                          onClick={() => {
+                            const cust = customers.find(c => c.id === col.customerId);
+                            const companyDue = cust?.dues?.[col.companyId] || 0;
+                            setNotificationModalData({
+                              collectionNo: col.collectionNo,
+                              shopName: col.shopName,
+                              customerName: col.customerName,
+                              phone: cust?.phone || '',
+                              amount: col.amount,
+                              companyName: col.companyName,
+                              date: col.date,
+                              paymentMethod: col.paymentMethod,
+                              referenceNo: col.referenceNo,
+                              remainingDue: companyDue,
+                              route: col.route,
+                              area: col.area
+                            });
+                          }}
+                          title="Send Payment Confirmation via WhatsApp or SMS"
+                          className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1 transition-all cursor-pointer shadow-xs"
                         >
-                          Submit to Manager
+                          <MessageSquare className="w-3.5 h-3.5 text-emerald-600" />
+                          <span className="hidden sm:inline">WhatsApp / SMS</span>
                         </button>
-                      )}
 
-                      {/* Manager workflow: transferred -> approve vault deposit */}
-                      {col.status === 'TRANSFERRED' && ['Super Admin', 'Manager', 'Accountant'].includes(userRole) && (
-                        <button
-                          onClick={() => handleApproveCollection(col.id)}
-                          className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1 transition-all mx-auto cursor-pointer"
-                        >
-                          <UserCheck className="w-3.5 h-3.5" />
-                          <span>Approve Safe Deposit</span>
-                        </button>
-                      )}
+                        {/* DSR workflow: pending -> transfer to manager */}
+                        {col.status === 'PENDING' && col.collectedById === userId && (
+                          <button
+                            onClick={() => handleTransferToManager(col.id)}
+                            className="bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer"
+                          >
+                            Submit
+                          </button>
+                        )}
 
-                      {/* Default empty action if already approved */}
-                      {col.status === 'APPROVED' && (
-                        <span className="text-[10px] text-gray-400 font-medium">Approved by {col.approvedByName || 'Manager'}</span>
-                      )}
+                        {/* Manager workflow: transferred -> approve vault deposit */}
+                        {col.status === 'TRANSFERRED' && ['Super Admin', 'Manager', 'Accountant'].includes(userRole) && (
+                          <button
+                            onClick={() => handleApproveCollection(col.id)}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center space-x-1 transition-all cursor-pointer"
+                          >
+                            <UserCheck className="w-3.5 h-3.5" />
+                            <span>Approve</span>
+                          </button>
+                        )}
+
+                        {/* Default approved label */}
+                        {col.status === 'APPROVED' && (
+                          <span className="text-[10px] text-gray-400 font-medium hidden md:inline">✓ Verified</span>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -834,6 +1440,186 @@ export default function CollectionView({ userRole, userId, userName }: Collectio
             </form>
           </div>
         </div>
+      )}
+      {/* Automated Notification Trigger Modal (WhatsApp / SMS Payment Received Confirmation) */}
+      {notificationModalData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl relative border border-emerald-100 animate-in fade-in zoom-in-95 duration-200 text-slate-800">
+            <button
+              onClick={() => setNotificationModalData(null)}
+              className="absolute top-4 right-4 p-1.5 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            {/* Header Badge */}
+            <div className="flex items-center space-x-3 mb-4">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shadow-inner shrink-0">
+                <CheckCircle className="w-6 h-6" />
+              </div>
+              <div>
+                <span className="inline-block px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-black uppercase tracking-wider mb-1">
+                  পেমেন্ট সফলভাবে এন্ট্রি হয়েছে
+                </span>
+                <h3 className="text-lg font-black text-slate-900 tracking-tight">
+                  কাস্টমার রিমাইন্ডার ও রসিদ বার্তা (Notification Trigger)
+                </h3>
+              </div>
+            </div>
+
+            {/* Receipt Quick Summary */}
+            <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/80 mb-4 space-y-2 text-xs">
+              <div className="flex justify-between items-center border-b border-slate-200/60 pb-2">
+                <span className="font-bold text-slate-500">মেমো / রসিদ নম্বর:</span>
+                <span className="font-black font-mono text-blue-700 text-sm">{notificationModalData.collectionNo}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="font-bold text-slate-500">গ্রাহক আউটলেট:</span>
+                <span className="font-extrabold text-slate-900">{notificationModalData.shopName} ({notificationModalData.customerName})</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="font-bold text-slate-500">গ্রহণের পরিমাণ:</span>
+                <span className="font-black text-emerald-700 text-base">৳{notificationModalData.amount.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="font-bold text-slate-500">কোম্পানি / ব্র্যান্ড:</span>
+                <span className="font-bold text-slate-800">{notificationModalData.companyName}</span>
+              </div>
+              <div className="flex justify-between items-center pt-1 border-t border-slate-200/60">
+                <span className="font-bold text-slate-500">অবশিষ্ট মোট বকেয়া:</span>
+                <span className="font-black text-rose-600">৳{notificationModalData.remainingDue.toLocaleString()}</span>
+              </div>
+            </div>
+
+            {/* Editable Customer Phone */}
+            <div className="mb-4">
+              <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center justify-between">
+                <span>গ্রাহকের মোবাইল নম্বর (Customer Phone)</span>
+                <span className="text-[10px] font-normal text-slate-400">WhatsApp / SMS এর জন্য প্রযোজ্য</span>
+              </label>
+              <div className="relative">
+                <Phone className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                <input
+                  type="text"
+                  value={notificationPhone}
+                  onChange={(e) => setNotificationPhone(e.target.value)}
+                  placeholder="017XXXXXXXX"
+                  className="w-full pl-9 pr-4 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                />
+              </div>
+            </div>
+
+            {/* Notification Live Message Preview */}
+            <div className="mb-5">
+              <label className="block text-xs font-bold text-slate-700 mb-1 flex justify-between items-center">
+                <span>প্রেরণযোগ্য বার্তা প্রিভিউ (Message Preview)</span>
+                <span className="text-[10px] text-emerald-600 font-bold">অটো-ফরম্যাট করা বার্তা</span>
+              </label>
+              <div className="p-3 bg-slate-900 text-emerald-300 rounded-2xl text-[11px] font-mono leading-relaxed whitespace-pre-wrap border border-slate-800 max-h-40 overflow-y-auto shadow-inner">
+                {generateNotificationMessage({
+                  ...notificationModalData,
+                  phone: notificationPhone
+                })}
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="space-y-2.5">
+              <div className="grid grid-cols-2 gap-3">
+                {/* WhatsApp Button */}
+                <a
+                  href={`https://api.whatsapp.com/send?phone=${formatWhatsAppPhone(notificationPhone)}&text=${encodeURIComponent(
+                    generateNotificationMessage({
+                      ...notificationModalData,
+                      phone: notificationPhone
+                    })
+                  )}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center space-x-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-4 rounded-2xl text-xs transition-all shadow-md shadow-emerald-600/20 active:scale-95 cursor-pointer"
+                >
+                  <Share2 className="w-4 h-4" />
+                  <span>WhatsApp এ পাঠান</span>
+                </a>
+
+                {/* SMS Button */}
+                <a
+                  href={`sms:${notificationPhone}?body=${encodeURIComponent(
+                    generateNotificationMessage({
+                      ...notificationModalData,
+                      phone: notificationPhone
+                    })
+                  )}`}
+                  className="flex items-center justify-center space-x-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-2xl text-xs transition-all shadow-md shadow-indigo-600/20 active:scale-95 cursor-pointer"
+                >
+                  <Smartphone className="w-4 h-4" />
+                  <span>SMS ট্রাইগার করুন</span>
+                </a>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                {/* Copy Text Button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const textToCopy = generateNotificationMessage({
+                      ...notificationModalData,
+                      phone: notificationPhone
+                    });
+                    navigator.clipboard.writeText(textToCopy);
+                    setIsCopied(true);
+                    setTimeout(() => setIsCopied(false), 2500);
+                  }}
+                  className="flex items-center justify-center space-x-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 px-4 rounded-2xl text-xs transition-colors cursor-pointer"
+                >
+                  {isCopied ? (
+                    <>
+                      <Check className="w-4 h-4 text-emerald-600" />
+                      <span className="text-emerald-700">কপি হয়েছে!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-4 h-4 text-slate-500" />
+                      <span>টেক্সট কপি করুন</span>
+                    </>
+                  )}
+                </button>
+
+                {/* Close Button */}
+                <button
+                  type="button"
+                  onClick={() => setNotificationModalData(null)}
+                  className="bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 px-4 rounded-2xl text-xs transition-colors cursor-pointer"
+                >
+                  সম্পন্ন (Done)
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Print Audit Reconciliation Report Modal */}
+      {printAuditReport && (
+        <PrintWrapper
+          type="general"
+          title={`Daily Collection Audit Reconciliation Summary (${printAuditReport.date === 'ALL' ? 'All Dates' : printAuditReport.date})`}
+          data={{
+            date: printAuditReport.date,
+            totalInvoicedSales: printAuditReport.metrics.totalInvoicedSales,
+            invoiceCashCollected: printAuditReport.metrics.invoiceCashCollected,
+            invoiceCreditIncurred: printAuditReport.metrics.invoiceCreditIncurred,
+            collectionsReceived: printAuditReport.metrics.collectionsReceived,
+            totalCashInflow: printAuditReport.metrics.totalCashInflow,
+            cashTotal: printAuditReport.metrics.cashTotal,
+            mobileTotal: printAuditReport.metrics.mobileTotal,
+            chequeTotal: printAuditReport.metrics.chequeTotal,
+            collectionsApproved: printAuditReport.metrics.collectionsApproved,
+            collectionsPending: printAuditReport.metrics.collectionsPending,
+            repSummaryList: printAuditReport.metrics.repSummaryList
+          }}
+          onClose={() => setPrintAuditReport(null)}
+        />
       )}
     </div>
   );

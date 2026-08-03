@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 
 interface PrintWrapperProps {
-  type: 'invoice' | 'settlement' | 'ledger' | 'general';
+  type: 'invoice' | 'settlement' | 'ledger' | 'general' | 'loadsheet';
   title?: string;
   data: any;
   onClose: () => void;
@@ -64,6 +64,28 @@ export default function PrintWrapper({ type, title = 'রিপোর্ট স�
                `---------------------------------\n` +
                `_ধন্যবাদ, আমাদের সাথেই থাকুন!_`;
       }
+    } else if (type === 'loadsheet') {
+      const itemsList = (data.items || []).map((item: any) => {
+        const ctnSize = item.cartonSize || 1;
+        const totalUnits = item.assignedUnits || item.qty || 0;
+        const ctn = Math.floor(totalUnits / ctnSize);
+        const pcs = totalUnits % ctnSize;
+        const val = totalUnits * (item.rate || item.price || 0);
+        return `• ${item.name}: ${ctn}Ctn ${pcs}Pcs @ ৳${item.rate || item.price} = ৳${val.toFixed(2)}`;
+      }).join('\n');
+
+      const totalVal = (data.items || []).reduce((sum: number, item: any) => sum + ((item.assignedUnits || item.qty || 0) * (item.rate || item.price || 0)), 0);
+
+      text = `*SAMIRA TRADERS*\n` +
+             `*Morning Loadsheet*\n` +
+             `---------------------------------\n` +
+             `*Date:* ${data.date || new Date().toISOString().split('T')[0]}\n` +
+             `*Route:* ${data.route || 'N/A'}\n` +
+             `*DSR:* ${data.dsrName || 'N/A'}\n` +
+             `---------------------------------\n` +
+             `*Loaded Items:*\n` + itemsList + `\n` +
+             `---------------------------------\n` +
+             `*Total Value:* ৳${totalVal.toLocaleString('bn-BD', { minimumFractionDigits: 2 })}`;
     } else if (type === 'settlement') {
       text = `*সামীরা ট্রেডার্স (Samira Traders)*\n` +
              `*ডিএসআর সেটেলমেন্ট রশিদ*\n` +
@@ -346,6 +368,52 @@ export default function PrintWrapper({ type, title = 'রিপোর্ট স�
                   </div>
                 ) : (
                   <div>
+                    {type === 'loadsheet' && (
+                      <div className="font-mono text-left text-[8px] space-y-1">
+                        <div className="text-center font-bold uppercase space-y-0.5">
+                          <p className="text-[11px] font-black">SAMIRA TRADERS</p>
+                          <p className="text-[8px] font-bold">Morning Loadsheet</p>
+                        </div>
+                        <div className="border-t border-dashed border-black my-1"></div>
+                        <p><strong>Date:</strong> {data.date || new Date().toISOString().split('T')[0]}</p>
+                        <p><strong>Route:</strong> {data.route || 'N/A'}</p>
+                        <p><strong>DSR:</strong> {data.dsrName || 'N/A'}</p>
+                        <div className="border-t border-dashed border-black my-1"></div>
+
+                        <div className="space-y-1">
+                          <div className="flex justify-between font-bold border-b border-black pb-0.5 text-[7.5px]">
+                            <span className="w-20">Item</span>
+                            <span className="w-5 text-center">Ctn</span>
+                            <span className="w-4 text-center">Pcs</span>
+                            <span className="w-8 text-right">Rate</span>
+                            <span className="w-10 text-right">Val</span>
+                          </div>
+                          {(data.items || []).map((item: any, idx: number) => {
+                            const ctnSize = item.cartonSize || 1;
+                            const totalUnits = item.assignedUnits || item.qty || 0;
+                            const ctn = Math.floor(totalUnits / ctnSize);
+                            const pcs = totalUnits % ctnSize;
+                            const rate = item.rate || item.price || 0;
+                            const val = totalUnits * rate;
+
+                            return (
+                              <div key={idx} className="flex justify-between items-center text-[7.5px]">
+                                <span className="w-20 truncate font-bold">{item.name}</span>
+                                <span className="w-5 text-center">{ctn}</span>
+                                <span className="w-4 text-center">{pcs}</span>
+                                <span className="w-8 text-right">{rate}</span>
+                                <span className="w-10 text-right font-bold">{val.toFixed(2)}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="border-t border-dashed border-black my-1"></div>
+                        <div className="text-right text-[8.5px] font-black">
+                          Total Value: ৳{(data.items || []).reduce((sum: number, i: any) => sum + ((i.assignedUnits || i.qty || 0) * (i.rate || i.price || 0)), 0).toLocaleString('bn-BD', { minimumFractionDigits: 2 })}
+                        </div>
+                      </div>
+                    )}
+
                     {type === 'invoice' && (
                       <div>
                         {/* 58mm Header */}
@@ -630,6 +698,66 @@ export default function PrintWrapper({ type, title = 'রিপোর্ট স�
                       {title}
                     </div>
                   </div>
+
+                  {/* Structured Loadsheet View */}
+                  {type === 'loadsheet' && (
+                    <div className="space-y-4 text-xs text-left">
+                      <div className="grid grid-cols-2 gap-2 text-xs text-slate-700 border-b pb-2 font-medium">
+                        <div>
+                          <p><strong>Date:</strong> <span className="font-mono">{data.date || new Date().toISOString().split('T')[0]}</span></p>
+                          <p><strong>Route:</strong> {data.route || 'N/A'}</p>
+                        </div>
+                        <div className="text-right">
+                          <p><strong>DSR:</strong> {data.dsrName || 'N/A'}</p>
+                        </div>
+                      </div>
+
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="border-b-2 border-black font-bold uppercase text-slate-800 bg-slate-50">
+                            <th className="py-1.5 px-2">Item</th>
+                            <th className="py-1.5 px-2 text-center">Ctn</th>
+                            <th className="py-1.5 px-2 text-center">Pcs</th>
+                            <th className="py-1.5 px-2 text-right">Rate</th>
+                            <th className="py-1.5 px-2 text-right">Val</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200 font-medium">
+                          {(data.items || []).map((item: any, idx: number) => {
+                            const ctnSize = item.cartonSize || 1;
+                            const totalUnits = item.assignedUnits || item.qty || 0;
+                            const ctn = Math.floor(totalUnits / ctnSize);
+                            const pcs = totalUnits % ctnSize;
+                            const rate = item.rate || item.price || 0;
+                            const val = totalUnits * rate;
+
+                            return (
+                              <tr key={idx}>
+                                <td className="py-1.5 px-2 font-bold text-slate-900">{item.name}</td>
+                                <td className="py-1.5 px-2 text-center font-mono">{ctn}</td>
+                                <td className="py-1.5 px-2 text-center font-mono">{pcs}</td>
+                                <td className="py-1.5 px-2 text-right font-mono">৳{rate}</td>
+                                <td className="py-1.5 px-2 text-right font-mono font-bold">৳{val.toFixed(2)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+
+                      <div className="border-t-2 border-black pt-2 text-right text-xs font-black text-slate-950">
+                        Total Value: ৳{(data.items || []).reduce((sum: number, i: any) => sum + ((i.assignedUnits || i.qty || 0) * (i.rate || i.price || 0)), 0).toLocaleString('bn-BD', { minimumFractionDigits: 2 })}
+                      </div>
+
+                      <div className="pt-10 grid grid-cols-2 gap-4 text-center text-xs font-bold text-gray-500">
+                        <div>
+                          <p className="border-t border-gray-400 pt-1 w-2/3 mx-auto">DSR Signature</p>
+                        </div>
+                        <div>
+                          <p className="border-t border-gray-400 pt-1 w-2/3 mx-auto">Manager Signature</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Structured Invoice View */}
                   {type === 'invoice' && (

@@ -27,7 +27,10 @@ import {
   Filter,
   SlidersHorizontal,
   Calendar,
-  Building2
+  Building2,
+  Wifi,
+  WifiOff,
+  CloudOff
 } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { collection, query, where, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
@@ -131,6 +134,38 @@ export default function App() {
   // Last Active states
   const [lastActiveTime, setLastActiveTime] = useState<string | null>(null);
   const [sessionStartTime] = useState<string>(() => new Date().toISOString());
+
+  // Network & Firestore Offline Sync State
+  const [isOnline, setIsOnline] = useState<boolean>(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [showSyncDetails, setShowSyncDetails] = useState<boolean>(false);
+  const [forcedOffline, setForcedOffline] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      setIsSyncing(true);
+      const timer = setTimeout(() => {
+        setIsSyncing(false);
+      }, 3000);
+      return () => clearTimeout(timer);
+    };
+
+    const handleOffline = () => {
+      setIsOnline(false);
+      setIsSyncing(false);
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  const effectiveOnline = isOnline && !forcedOffline;
 
   useEffect(() => {
     if (!currentUser) {
@@ -1655,11 +1690,123 @@ export default function App() {
           </div>
 
           <div className="flex items-center space-x-3 shrink-0">
-            {/* Real-time active status */}
-            <span className="hidden sm:inline-flex items-center px-2 py-1 rounded-md text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-100">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping mr-1.5"></span>
-              Live Synced
-            </span>
+            {/* Offline Mode & Firestore Sync Indicator */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowSyncDetails(!showSyncDetails)}
+                id="offline-sync-indicator-btn"
+                className={`inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-xl text-[11px] font-bold border transition-all cursor-pointer shadow-xs ${
+                  !effectiveOnline
+                    ? 'bg-amber-500/10 text-amber-700 border-amber-300 hover:bg-amber-500/20'
+                    : isSyncing
+                    ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
+                    : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                }`}
+                title="Click to inspect network status and local Firestore queue"
+              >
+                {!effectiveOnline ? (
+                  <>
+                    <WifiOff className="w-3.5 h-3.5 text-amber-600 animate-pulse" />
+                    <span className="hidden sm:inline">Offline Mode</span>
+                    <span className="text-[9px] bg-amber-200 text-amber-900 px-1.5 py-0.2 rounded-md font-mono">
+                      Local Queue
+                    </span>
+                  </>
+                ) : isSyncing ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 text-blue-600 animate-spin" />
+                    <span>Syncing Firestore...</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                    </span>
+                    <Wifi className="w-3.5 h-3.5 text-emerald-600" />
+                    <span className="hidden sm:inline">Live Synced</span>
+                  </>
+                )}
+              </button>
+
+              {/* Sync Details & Offline Mode Popover */}
+              {showSyncDetails && (
+                <div
+                  id="offline-sync-popover"
+                  className="absolute right-0 mt-2 w-80 bg-white rounded-2xl shadow-2xl border border-slate-200 p-4 z-50 text-xs space-y-3 animate-fade-in"
+                >
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <div className="flex items-center space-x-2">
+                      {!effectiveOnline ? (
+                        <WifiOff className="w-4 h-4 text-amber-500" />
+                      ) : (
+                        <Wifi className="w-4 h-4 text-emerald-500" />
+                      )}
+                      <h4 className="font-bold text-slate-800">Connection & Sync Monitor</h4>
+                    </div>
+                    <button
+                      onClick={() => setShowSyncDetails(false)}
+                      className="text-slate-400 hover:text-slate-600 cursor-pointer p-1"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                      <span className="text-slate-500 font-medium">Network Status:</span>
+                      {!effectiveOnline ? (
+                        <span className="font-bold text-amber-600 flex items-center space-x-1">
+                          <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                          <span>Offline (No Connection)</span>
+                        </span>
+                      ) : (
+                        <span className="font-bold text-emerald-600 flex items-center space-x-1">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                          <span>Online (Connected)</span>
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-amber-50 border border-amber-200/60 text-amber-900 text-[11px] space-y-1">
+                      <div className="font-bold flex items-center space-x-1 text-amber-800">
+                        <Database className="w-3.5 h-3.5 shrink-0" />
+                        <span>Firestore Local Cache Queue</span>
+                      </div>
+                      <p className="text-amber-700 leading-relaxed">
+                        {!effectiveOnline
+                          ? 'Changes made while offline are saved securely in browser IndexedDB/cache and will automatically sync with Firestore when reconnected.'
+                          : 'Your local database client is active with long-polling fallback. All collections are synchronized.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Manual Simulation Toggle for Offline Mode */}
+                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Simulate Offline Mode</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextState = !forcedOffline;
+                        setForcedOffline(nextState);
+                        if (!nextState) {
+                          setIsSyncing(true);
+                          setTimeout(() => setIsSyncing(false), 2500);
+                        }
+                      }}
+                      className={`px-2.5 py-1 text-[10px] font-bold rounded-lg border transition-all cursor-pointer ${
+                        forcedOffline
+                          ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                          : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'
+                      }`}
+                    >
+                      {forcedOffline ? 'Disable Simulation' : 'Simulate Offline'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* Notification Bell (Only for Admins/Managers) */}
             {(currentUser.role === 'Super Admin' || currentUser.role === 'Manager') && (() => {
@@ -1682,6 +1829,26 @@ export default function App() {
             })()}
           </div>
         </div>
+
+        {/* Persistent Offline Mode Banner */}
+        {!effectiveOnline && (
+          <div className="bg-gradient-to-r from-amber-500 via-amber-600 to-amber-500 text-slate-950 px-4 py-2.5 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-bold shadow-lg border border-amber-400/40 animate-fade-in" id="offline-mode-banner">
+            <div className="flex items-center space-x-2.5">
+              <div className="p-1.5 bg-slate-950/10 rounded-xl shrink-0">
+                <WifiOff className="w-4 h-4 text-slate-950 animate-pulse" />
+              </div>
+              <div>
+                <span>Offline Mode Active — You are currently disconnected from the internet.</span>
+                <p className="text-[10px] font-medium text-slate-900/90 font-mono">All new invoices, receipts, and edits are stored safely in local browser memory and will automatically sync with Firestore once reconnected.</p>
+              </div>
+            </div>
+            <div className="flex items-center space-x-2 shrink-0">
+              <span className="bg-slate-950 text-amber-300 text-[10px] px-2.5 py-1 rounded-lg font-mono">
+                Local Queue Ready
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* Dynamic View Panel */}
         <div className="animate-fade-in space-y-6" id="active-view-viewport">
